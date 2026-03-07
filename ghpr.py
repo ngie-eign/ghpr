@@ -393,10 +393,6 @@ class GHPR:
         if not self.is_initialized():
             self.die(f"Branch {self.staging} has not been initialized. Run 'ghpr init' first.")
 
-        # Default reviewer to current user if not specified
-        if reviewer is None:
-            reviewer = getpass.getuser()
-
         base = self.get_base()
         prs = self.get_prs()
         pr_branch = f'PR-{pr_number}'
