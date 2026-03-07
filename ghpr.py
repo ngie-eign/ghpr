@@ -264,11 +264,13 @@ class GHHelper:
         subprocess.run(cmd, check=True)
 
     @staticmethod
-    def pr_edit(pr_number: int, add_label: Optional[str] = None) -> None:
+    def pr_edit(pr_number: int, add_label: Optional[str] = None, remove_label: Optional[str] = None) -> None:
         """Edit PR metadata"""
         cmd = ['gh', 'pr', 'edit', str(pr_number)]
         if add_label:
             cmd.extend(['--add-label', add_label])
+        if remove_label:
+            cmd.extend(['--remove-label', remove_label])
         GHHelper._print_cmd(cmd)
         if GHHelper.dry_run:
             return
@@ -434,6 +436,13 @@ class GHPR:
                     except Exception as e:
                         print(f"Style checker warning: {e}")
 
+            # Add 'staged' label to GitHub PR
+            print(f"Adding 'staged' label to PR #{pr_number}...")
+            try:
+                GHHelper.pr_edit(pr_number, add_label='staged')
+            except Exception as e:
+                print(f"Warning: Failed to add 'staged' label to PR #{pr_number}: {e}")
+
             print(f"\nPR #{pr_number} staged successfully!")
             print(f"Review the commits and when ready, run: ghpr push")
             return
@@ -522,6 +531,13 @@ class GHPR:
                 except Exception as e:
                     print(f"Style checker warning: {e}")
 
+        # Add 'staged' label to GitHub PR
+        print(f"Adding 'staged' label to PR #{pr_number}...")
+        try:
+            GHHelper.pr_edit(pr_number, add_label='staged')
+        except Exception as e:
+            print(f"Warning: Failed to add 'staged' label to PR #{pr_number}: {e}")
+
         print(f"\nPR #{pr_number} staged successfully!")
         print(f"Review the commits and when ready, run: ghpr push")
 
@@ -574,7 +590,8 @@ class GHPR:
             if not do_pr_branch_push:
                 print(f"Updating GitHub PR #{pr}...")
                 try:
-                    GHHelper.pr_edit(pr_num, add_label='merged')
+                    # Remove 'staged' label and add 'merged' label
+                    GHHelper.pr_edit(pr_num, add_label='merged', remove_label='staged')
                     GHHelper.pr_close(
                         pr_num,
                         comment="Automated message from ghpr: Thank you for your submission. "
@@ -662,6 +679,13 @@ class GHPR:
         # Remove from config
         GitConfig.unset(f'{self.config_prefix}.prs', pr_str)
         GitConfig.remove_section(f'{self.config_prefix}.{pr_number}')
+
+        # Remove 'staged' label from GitHub PR
+        print(f"Removing 'staged' label from PR #{pr_number}...")
+        try:
+            GHHelper.pr_edit(pr_number, remove_label='staged')
+        except Exception as e:
+            print(f"Warning: Failed to remove 'staged' label from PR #{pr_number}: {e}")
 
         print(f"Successfully unstaged PR #{pr_number}")
 
