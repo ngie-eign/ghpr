@@ -272,6 +272,9 @@ class GitHelper:
         GitHelper.run(cmd)
 
 
+FREEBSD_SRC_GITHUB_REPO = "freebsd/freebsd-src"
+
+
 class GHHelper:
     """Helper class for GitHub CLI operations."""
 
@@ -287,11 +290,55 @@ class GHHelper:
     @staticmethod
     def pr_checkout(pr_number: int, branch: str) -> None:
         """Checkout a PR into a branch."""
-        cmd = ["gh", "pr", "checkout", str(pr_number), "-b", branch]
+        cmd = [
+            "gh",
+            "pr",
+            "--repo",
+            FREEBSD_SRC_GITHUB_REPO,
+            "checkout",
+            str(pr_number),
+            "-b",
+            branch,
+        ]
         GHHelper._print_cmd(cmd)
         if GHHelper.dry_run:
             return
         subprocess.run(cmd, check=True)
+
+    @staticmethod
+    def gh_pr(
+        command: str,
+        pr: int,
+        args: list[str],
+    ) -> subprocess.CompletedProcess | None:
+        """Run `gh pr`.
+
+        This method runs `gh pr` with an appropriate `--repo` argument, combined with
+        the provided `args`.
+
+        Args:
+            command: commands passed verbatim to `gh pr`, e.g., "view", "close", etc.
+            pr: GitHub PR #, e.g., 2048.
+            args: arguments to pass directly to `gh pr`.
+
+        Returns:
+            A `subprocess.CompletedProcess` object representing the result of the
+            `gh pr` command, or `None` if `--dry-run` was specified previously.
+
+        """
+        cmd = [
+            "gh",
+            "pr",
+            "--repo",
+            FREEBSD_SRC_GITHUB_REPO,
+            command,
+            str(pr),
+            *args,
+        ]
+        GHHelper._print_cmd(cmd)
+        if GHHelper.dry_run:
+            return None
+        return subprocess.run(cmd, capture_output=True, check=True, text=True)
 
     @staticmethod
     def pr_edit(
@@ -300,35 +347,29 @@ class GHHelper:
         remove_label: str | None = None,
     ) -> None:
         """Edit PR metadata."""
-        cmd = ["gh", "pr", "edit", str(pr_number)]
+        args = []
         if add_label:
-            cmd.extend(["--add-label", add_label])
+            args.extend(["--add-label", add_label])
         if remove_label:
-            cmd.extend(["--remove-label", remove_label])
-        GHHelper._print_cmd(cmd)
-        if GHHelper.dry_run:
-            return
-        subprocess.run(cmd, check=True)
+            args.extend(["--remove-label", remove_label])
+        GHHelper.gh_pr("edit", pr_number, args)
 
     @staticmethod
     def pr_close(pr_number: int, comment: str | None = None) -> None:
         """Close a PR."""
-        cmd = ["gh", "pr", "close", str(pr_number)]
-        if comment:
-            cmd.extend(["--comment", comment])
-        GHHelper._print_cmd(cmd)
-        if GHHelper.dry_run:
-            return
-        subprocess.run(cmd, check=True)
+        args = ["--comment", comment] if comment else []
+        GHHelper.gh_pr("close", pr_number, args)
 
     @staticmethod
     def pr_view(pr_number: int) -> dict:
         """Get PR information including labels, assignees, and reviews."""
-        cmd = ["gh", "pr", "view", str(pr_number), "--json", "labels,assignees,reviews"]
-        GHHelper._print_cmd(cmd)
         if GHHelper.dry_run:
             return {"labels": [], "assignees": [], "reviews": []}
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        args = [
+            "--json",
+            "labels,assignees,reviews",
+        ]
+        result = GHHelper.gh_pr("view", pr_number, args)
         return json.loads(result.stdout)
 
 
