@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """ghpr - GitHub Pull Request landing tool for FreeBSD.
 
 Unified tool to land GitHub pull requests into FreeBSD repositories.
@@ -25,6 +24,8 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+
+from . import __version__
 
 
 class GitConfig:
@@ -1023,6 +1024,11 @@ Examples:
             "Show what would be done without actually doing it "
             "(automatically prints commands)"
         ),
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
 
     subparsers = parser.add_subparsers(
