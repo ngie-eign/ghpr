@@ -27,6 +27,9 @@ from pathlib import Path
 
 from . import __version__, logging
 
+DEFAULT_FREEBSD_SRC_GITHUB_REPO = "freebsd/freebsd-src"
+DEFAULT_STAGING_BRANCH = "staging"
+DEFAULT_STAGING_REMOTE = "freebsd"
 LOGGER = logging.get_logger("ghpr")
 
 
@@ -274,9 +277,6 @@ class GitHelper:
         GitHelper.run(cmd)
 
 
-FREEBSD_SRC_GITHUB_REPO = "freebsd/freebsd-src"
-
-
 class GHHelper:
     """Helper class for GitHub CLI operations."""
 
@@ -296,7 +296,7 @@ class GHHelper:
             "gh",
             "pr",
             "--repo",
-            FREEBSD_SRC_GITHUB_REPO,
+            DEFAULT_FREEBSD_SRC_GITHUB_REPO,
             "checkout",
             str(pr_number),
             "-b",
@@ -332,7 +332,7 @@ class GHHelper:
             "gh",
             "pr",
             "--repo",
-            FREEBSD_SRC_GITHUB_REPO,
+            DEFAULT_FREEBSD_SRC_GITHUB_REPO,
             command,
             str(pr),
             *args,
@@ -380,13 +380,15 @@ class GHPR:
 
     def __init__(  # noqa: D107
         self,
-        staging_branch: str = "staging",
+        staging_branch: str = DEFAULT_STAGING_BRANCH,
+        staging_remote: str = DEFAULT_STAGING_REMOTE,
         verbose: bool = False,
         dry_run: bool = False,
     ) -> None:
         self.staging = staging_branch
         self.base = "main"
         self.config_prefix = f"branch.{self.staging}.opabinia"
+        self.staging_remote = staging_remote
         self.verbose = verbose
         self.dry_run = dry_run
 
@@ -420,8 +422,13 @@ class GHPR:
         """Get list of PRs in staging branch."""
         return GitConfig.get_all(f"{self.config_prefix}.prs")
 
-    def _check_freebsd_remote(self) -> None:
-        """Verify that 'freebsd' remote exists and points to the correct URL."""
+    def _check_staging_remote(self) -> None:
+        """Verify the staging remote.
+
+        Confirm that the staging branch remote:
+        - .. exists.
+        - .. points to one of the expected URLs.
+        """
         allowed_urls = [
             "git@gitrepo.freebsd.org:src.git",
             "ssh://git@gitrepo.freebsd.org/src.git",
@@ -430,21 +437,21 @@ class GHPR:
         # Check if remote exists
         try:
             result = GitHelper.run(
-                ["remote", "get-url", "freebsd"],
+                ["remote", "get-url", self.staging_remote],
                 capture=True,
                 check=False,
                 safe=True,
             )
             if result.returncode != 0:
                 self.die(
-                    f"No 'freebsd' remote found.\n"
+                    f"No {self.staging_remote!r} remote found.\n"
                     f"Please add it with:\n"
-                    f"  git remote add freebsd {allowed_urls[0]}",
+                    f"  git remote add {self.staging_remote} {allowed_urls[0]}",
                 )
             fetch_url = result.stdout.strip()
         except Exception:
             self.die(
-                f"Failed to check 'freebsd' remote.\n"
+                f"Failed to check {self.staging_remote!r} remote.\n"
                 f"Please ensure it exists and points to one of the following:\n"
                 f"  {allowed_urls}",
             )
@@ -452,17 +459,17 @@ class GHPR:
         # Check fetch URL
         if fetch_url not in allowed_urls:
             self.die(
-                f"'freebsd' remote fetch URL is incorrect.\n"
+                f"{self.staging_remote!r} remote fetch URL is incorrect.\n"
                 f"Allowed URLs: {allowed_urls!r}\n"
                 f"Got:      {fetch_url}\n"
                 f"Please update it with:\n"
-                f"  git remote set-url freebsd {allowed_urls[0]}",
+                f"  git remote set-url {self.staging_remote} {allowed_urls[0]}",
             )
 
         # Check push URL
         try:
             result = GitHelper.run(
-                ["remote", "get-url", "--push", "freebsd"],
+                ["remote", "get-url", "--push", self.staging_remote],
                 capture=True,
                 check=False,
                 safe=True,
@@ -474,20 +481,23 @@ class GHPR:
 
         if push_url not in allowed_urls:
             self.die(
-                f"'freebsd' remote push URL is incorrect.\n"
+                f"'{self.staging_remote}' remote push URL is incorrect.\n"
                 f"Allowed URLs: {allowed_urls!r}\n"
                 f"Got:      {push_url}\n"
                 f"Please update it with:\n"
-                f"  git remote set-url --push freebsd {allowed_urls[0]}",
+                f"  git remote set-url --push {self.staging_remote} {allowed_urls[0]}",
             )
 
         if self.verbose:
-            print("✓ 'freebsd' remote is correctly configured", file=sys.stderr)
+            print(
+                f"✓ '{self.staging_remote}' remote is correctly configured",
+                file=sys.stderr,
+            )
 
     def init(self, force: bool = False) -> None:
         """Initialize staging branch for PR landing (ghpr-init.sh)."""
-        # Check that 'freebsd' remote is properly configured
-        self._check_freebsd_remote()
+        # Check that the staging branch's remote is properly configured
+        self._check_staging_remote()
 
         if force:
             print("Force re-initialization requested")
@@ -838,12 +848,16 @@ class GHPR:
 
             # Push to FreeBSD main
             print("Pushing to FreeBSD main...")
-            if GitHelper.push("freebsd", "HEAD:main", push_option="confirm-author"):
+            if GitHelper.push(
+                self.staging_remote,
+                "HEAD:main",
+                push_option="confirm-author",
+            ):
                 break
 
             # Push failed, rebase and retry
             print("Push failed, fetching and rebasing...")
-            GitHelper.fetch("freebsd")
+            GitHelper.fetch(self.staging_remote)
             try:
                 GitHelper.rebase("freebsd/main")
             except subprocess.CalledProcessError:
@@ -1060,8 +1074,13 @@ Examples:
 
     parser.add_argument(
         "--staging-branch",
-        default="staging",
+        default=DEFAULT_STAGING_BRANCH,
         help="Name of staging branch (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--staging-remote",
+        default=DEFAULT_STAGING_REMOTE,
+        help="Name of remote used for `--staging-branch` (default: %(default)s)",
     )
     parser.add_argument(
         "-v",
@@ -1145,6 +1164,7 @@ Examples:
 
     ghpr = GHPR(
         staging_branch=args.staging_branch,
+        staging_remote=args.staging_remote,
         verbose=args.verbose,
         dry_run=args.dry_run,
     )
