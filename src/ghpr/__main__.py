@@ -9,7 +9,7 @@ SPDX-License-Identifier: BSD-2-Clause
 
 # These issues are [generally] annoying noise from `ruff`.
 #
-# ruff: noqa: BLE001, FBT001, FBT002, S603, T201
+# ruff: noqa: BLE001, FBT001, FBT002, S603
 
 # These issues should be fixed.
 #
@@ -17,7 +17,6 @@ SPDX-License-Identifier: BSD-2-Clause
 
 from __future__ import annotations
 
-import argparse
 import contextlib
 import getpass
 import json
@@ -25,8 +24,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+import click
+
 from . import __version__, logging
 
+DEFAULT_FREEBSD_SRC_GITHUB_REPO = "freebsd/freebsd-src"
+DEFAULT_STAGING_BRANCH = "staging"
+DEFAULT_STAGING_REMOTE = "freebsd"
 LOGGER = logging.get_logger("ghpr")
 
 
@@ -40,7 +44,7 @@ class GitConfig:
     def _print_cmd(cmd: list[str]) -> None:
         """Print command if verbose or dry-run mode is enabled."""
         if GitConfig.verbose or GitConfig.dry_run:
-            print(f"+ {' '.join(cmd)}", file=sys.stderr)
+            click.echo(f"+ {' '.join(cmd)}")
 
     @staticmethod
     def get(key: str, default: str | None = None) -> str | None:
@@ -128,7 +132,7 @@ class GitHelper:
     def _print_cmd(cmd: list[str]) -> None:
         """Print command if verbose or dry-run mode is enabled."""
         if GitHelper.verbose or GitHelper.dry_run:
-            print(f"+ {' '.join(cmd)}", file=sys.stderr)
+            click.echo(f"+ {' '.join(cmd)}")
 
     @staticmethod
     def run(
@@ -274,9 +278,6 @@ class GitHelper:
         GitHelper.run(cmd)
 
 
-FREEBSD_SRC_GITHUB_REPO = "freebsd/freebsd-src"
-
-
 class GHHelper:
     """Helper class for GitHub CLI operations."""
 
@@ -287,7 +288,7 @@ class GHHelper:
     def _print_cmd(cmd: list[str]) -> None:
         """Print command if verbose or dry-run mode is enabled."""
         if GHHelper.verbose or GHHelper.dry_run:
-            print(f"+ {' '.join(cmd)}", file=sys.stderr)
+            click.echo(f"+ {' '.join(cmd)}")
 
     @staticmethod
     def pr_checkout(pr_number: int, branch: str) -> None:
@@ -296,7 +297,7 @@ class GHHelper:
             "gh",
             "pr",
             "--repo",
-            FREEBSD_SRC_GITHUB_REPO,
+            DEFAULT_FREEBSD_SRC_GITHUB_REPO,
             "checkout",
             str(pr_number),
             "-b",
@@ -332,7 +333,7 @@ class GHHelper:
             "gh",
             "pr",
             "--repo",
-            FREEBSD_SRC_GITHUB_REPO,
+            DEFAULT_FREEBSD_SRC_GITHUB_REPO,
             command,
             str(pr),
             *args,
@@ -380,15 +381,12 @@ class GHPR:
 
     def __init__(  # noqa: D107
         self,
-        staging_branch: str = "staging",
+        staging_branch: str = DEFAULT_STAGING_BRANCH,
+        staging_remote: str = DEFAULT_STAGING_REMOTE,
         verbose: bool = False,
         dry_run: bool = False,
     ) -> None:
-        self.staging = staging_branch
         self.base = "main"
-        self.config_prefix = f"branch.{self.staging}.opabinia"
-        self.verbose = verbose
-        self.dry_run = dry_run
 
         # Set verbose and dry_run on all helper classes
         GitConfig.verbose = verbose
@@ -398,10 +396,18 @@ class GHPR:
         GHHelper.verbose = verbose
         GHHelper.dry_run = dry_run
 
-        if dry_run:
-            print("DRY RUN MODE - No changes will be made\n", file=sys.stderr)
+        self.staging = staging_branch
+        self.staging_remote = staging_remote
 
-    def die(self, message: str) -> None:
+        self.config_prefix = f"branch.{self.staging}.opabinia"
+
+        self.verbose = verbose
+        self.dry_run = dry_run
+        if dry_run:
+            click.echo("DRY RUN MODE - No changes will be made\n")
+
+    @staticmethod
+    def die(message: str) -> None:
         """Print error and exit."""
         sys.exit(f"Error: {message}")
 
@@ -420,8 +426,13 @@ class GHPR:
         """Get list of PRs in staging branch."""
         return GitConfig.get_all(f"{self.config_prefix}.prs")
 
-    def _check_freebsd_remote(self) -> None:
-        """Verify that 'freebsd' remote exists and points to the correct URL."""
+    def _check_staging_remote(self) -> None:
+        """Verify the staging remote.
+
+        Confirm that the staging branch remote:
+        - .. exists.
+        - .. points to one of the expected URLs.
+        """
         allowed_urls = [
             "git@gitrepo.freebsd.org:src.git",
             "ssh://git@gitrepo.freebsd.org/src.git",
@@ -430,21 +441,21 @@ class GHPR:
         # Check if remote exists
         try:
             result = GitHelper.run(
-                ["remote", "get-url", "freebsd"],
+                ["remote", "get-url", self.staging_remote],
                 capture=True,
                 check=False,
                 safe=True,
             )
             if result.returncode != 0:
                 self.die(
-                    f"No 'freebsd' remote found.\n"
+                    f"No {self.staging_remote!r} remote found.\n"
                     f"Please add it with:\n"
-                    f"  git remote add freebsd {allowed_urls[0]}",
+                    f"  git remote add {self.staging_remote} {allowed_urls[0]}",
                 )
             fetch_url = result.stdout.strip()
         except Exception:
             self.die(
-                f"Failed to check 'freebsd' remote.\n"
+                f"Failed to check {self.staging_remote!r} remote.\n"
                 f"Please ensure it exists and points to one of the following:\n"
                 f"  {allowed_urls}",
             )
@@ -452,17 +463,17 @@ class GHPR:
         # Check fetch URL
         if fetch_url not in allowed_urls:
             self.die(
-                f"'freebsd' remote fetch URL is incorrect.\n"
+                f"{self.staging_remote!r} remote fetch URL is incorrect.\n"
                 f"Allowed URLs: {allowed_urls!r}\n"
                 f"Got:      {fetch_url}\n"
                 f"Please update it with:\n"
-                f"  git remote set-url freebsd {allowed_urls[0]}",
+                f"  git remote set-url {self.staging_remote} {allowed_urls[0]}",
             )
 
         # Check push URL
         try:
             result = GitHelper.run(
-                ["remote", "get-url", "--push", "freebsd"],
+                ["remote", "get-url", "--push", self.staging_remote],
                 capture=True,
                 check=False,
                 safe=True,
@@ -474,25 +485,25 @@ class GHPR:
 
         if push_url not in allowed_urls:
             self.die(
-                f"'freebsd' remote push URL is incorrect.\n"
+                f"'{self.staging_remote}' remote push URL is incorrect.\n"
                 f"Allowed URLs: {allowed_urls!r}\n"
                 f"Got:      {push_url}\n"
                 f"Please update it with:\n"
-                f"  git remote set-url --push freebsd {allowed_urls[0]}",
+                f"  git remote set-url --push {self.staging_remote} {allowed_urls[0]}",
             )
 
         if self.verbose:
-            print("✓ 'freebsd' remote is correctly configured", file=sys.stderr)
+            click.echo(f"✓ '{self.staging_remote}' remote is correctly configured")
 
     def init(self, force: bool = False) -> None:
         """Initialize staging branch for PR landing (ghpr-init.sh)."""
-        # Check that 'freebsd' remote is properly configured
-        self._check_freebsd_remote()
+        # Check that the staging branch's remote is properly configured
+        self._check_staging_remote()
 
         if force:
-            print("Force re-initialization requested")
+            click.echo("Force re-initialization requested")
             if self.is_initialized() or GitHelper.branch_exists(self.staging):
-                print(f"Cleaning up existing {self.staging} branch and config...")
+                click.echo(f"Cleaning up existing {self.staging} branch and config...")
                 # Remove all config for this staging branch
                 GitConfig.remove_section(self.config_prefix)
                 # Checkout base branch if we're currently on staging
@@ -500,20 +511,20 @@ class GHPR:
                 GitHelper.checkout(self.base)
                 # Delete the branch if it exists
                 GitHelper.delete_branch(self.staging)
-                print("Cleanup complete")
+                click.echo("Cleanup complete")
 
         if self.is_initialized():
-            print(f"Branch {self.staging} has already been initialized")
+            click.echo(f"Branch {self.staging} has already been initialized")
             return
 
         if GitHelper.branch_exists(self.staging):
-            print(
+            click.echo(
                 f"Branch {self.staging} already exists. "
                 f"Skipping creation, but rebasing to {self.base}",
             )
             GitHelper.rebase(self.base, interactive=False)
         else:
-            print(f"Creating {self.staging} from {self.base} to land changes")
+            click.echo(f"Creating {self.staging} from {self.base} to land changes")
             try:
                 GitHelper.checkout(self.staging, create=True, base=self.base)
             except subprocess.CalledProcessError:
@@ -525,11 +536,11 @@ class GHPR:
         except subprocess.CalledProcessError:
             self.die("Can't annotate branch config")
 
-        print(f"Staging branch {self.staging} initialized successfully")
+        click.echo(f"Staging branch {self.staging} initialized successfully")
 
     def update_to_upstream(self) -> None:
         """Update base branch and rebase staging onto it."""
-        print(f"Updating {self.base} and rebasing {self.staging}...")
+        click.echo(f"Updating {self.base} and rebasing {self.staging}...")
         GitHelper.checkout(self.base)
         GitHelper.pull(rebase=True)
         GitHelper.rebase(self.base, interactive=True)
@@ -548,7 +559,7 @@ class GHPR:
         LOGGER.info("running style checker...")
         cmd = ["perl", str(checkstyle), f"{base}..{tip}"]
         if self.verbose or self.dry_run:
-            print(f"+ {' '.join(cmd)}", file=sys.stderr)
+            click.echo(f"+ {' '.join(cmd)}")
         if self.dry_run:
             return
         try:
@@ -746,16 +757,16 @@ class GHPR:
                 exec_cmd=exec_cmd,
             )
         except subprocess.CalledProcessError:
-            print("\n" + "=" * 70)
-            print("REBASE FAILED - Conflicts need to be resolved")
-            print("=" * 70)
-            print("\nTo resolve:")
-            print("  1. Fix conflicts in the affected files")
-            print("  2. Stage resolved files: git add <files>")
-            print(f"  3. Continue staging: ghpr stage --continue {pr_number}")
-            print("\nOr to abort:")
-            print("  git rebase --abort")
-            print("=" * 70)
+            click.echo("\n" + "=" * 70)
+            click.echo("REBASE FAILED - Conflicts need to be resolved")
+            click.echo("=" * 70)
+            click.echo("\nTo resolve:")
+            click.echo("  1. Fix conflicts in the affected files")
+            click.echo("  2. Stage resolved files: git add <files>")
+            click.echo(f"  3. Continue staging: ghpr stage --continue {pr_number}")
+            click.echo("\nOr to abort:")
+            click.echo("  git rebase --abort")
+            click.echo("=" * 70)
             sys.exit(1)
 
         # Save PR metadata
@@ -821,7 +832,7 @@ class GHPR:
         if not prs:
             self.die(f"No PRs staged in {self.staging}")
 
-        print(f"Pushing {len(prs)} PR(s) to FreeBSD main branch...")
+        click.echo(f"Pushing {len(prs)} PR(s) to FreeBSD main branch...")
 
         # Push loop - retry on failure with rebase
         while True:
@@ -833,35 +844,39 @@ class GHPR:
                         f"{self.config_prefix}.{pr}.upstream-branch",
                     )
                     if upstream and upstream_branch:
-                        print(f"Pushing to PR #{pr} branch...")
+                        click.echo(f"Pushing to PR #{pr} branch...")
                         GitHelper.push(upstream, f"HEAD:{upstream_branch}", force=True)
 
             # Push to FreeBSD main
-            print("Pushing to FreeBSD main...")
-            if GitHelper.push("freebsd", "HEAD:main", push_option="confirm-author"):
+            click.echo("Pushing to FreeBSD main...")
+            if GitHelper.push(
+                self.staging_remote,
+                "HEAD:main",
+                push_option="confirm-author",
+            ):
                 break
 
             # Push failed, rebase and retry
-            print("Push failed, fetching and rebasing...")
-            GitHelper.fetch("freebsd")
+            click.echo("Push failed, fetching and rebasing...")
+            GitHelper.fetch(self.staging_remote)
             try:
                 GitHelper.rebase("freebsd/main")
             except subprocess.CalledProcessError:
                 self.die("Rebase failed. Please resolve conflicts manually.")
 
-        print("Successfully pushed to FreeBSD main!")
+        click.echo("Successfully pushed to FreeBSD main!")
 
         # Update local main
-        print("Updating local main branch...")
+        click.echo("Updating local main branch...")
         GitHelper.checkout("main")
         GitHelper.pull(rebase=True)
 
         # Cleanup PRs
-        print("\nCleaning up...")
+        click.echo("\nCleaning up...")
         for pr in prs:
             pr_num = int(pr)
             if not do_pr_branch_push:
-                print(f"Updating GitHub PR #{pr}...")
+                click.echo(f"Updating GitHub PR #{pr}...")
                 try:
                     # Remove 'staged' label and add 'merged' label
                     comment = (
@@ -887,7 +902,7 @@ class GHPR:
         GitConfig.remove_section(self.config_prefix)
         GitHelper.delete_branch(self.staging)
 
-        print(f"\nSuccessfully landed {len(prs)} PR(s)!")
+        click.echo(f"\nSuccessfully landed {len(prs)} PR(s)!")
 
     def unstage(self, pr_number: int) -> None:
         """Remove a staged PR from the staging branch."""
@@ -902,7 +917,7 @@ class GHPR:
 
         base = self.get_base()
 
-        print(f"Removing PR #{pr_number} from {self.staging}...")
+        click.echo(f"Removing PR #{pr_number} from {self.staging}...")
 
         # Find commits that belong to this PR by looking for the Pull Request trailer
         # Note: Git normalizes "Pull-Request" to "Pull Request" in trailers
@@ -979,7 +994,7 @@ class GHPR:
         GitConfig.remove_section(f"{self.config_prefix}.{pr_number}")
 
         # Remove 'staged' label from GitHub PR
-        print(f"Removing 'staged' label from PR #{pr_number}...")
+        click.echo(f"Removing 'staged' label from PR #{pr_number}...")
         try:
             GHHelper.pr_edit(pr_number, remove_label="staged")
         except Exception:
@@ -989,191 +1004,197 @@ class GHPR:
                 exc_info=True,
             )
 
-        print(f"Successfully unstaged PR #{pr_number}")
+        click.echo(f"Successfully unstaged PR #{pr_number}")
 
         # Show updated status
         remaining_prs = self.get_prs()
         if remaining_prs:
-            print(f"\nRemaining PRs: {', '.join(['#' + pr for pr in remaining_prs])}")
+            click.echo(
+                f"\nRemaining PRs: {', '.join(['#' + pr for pr in remaining_prs])}",
+            )
         else:
-            print("\nNo PRs remaining in staging branch")
+            click.echo("\nNo PRs remaining in staging branch")
 
     def status(self) -> None:
         """Show status of staging branch."""
         if not self.is_initialized():
-            print(f"Staging branch '{self.staging}' is not initialized")
-            print("Run 'ghpr init' to initialize it")
+            click.echo(f"Staging branch '{self.staging}' is not initialized")
+            click.echo("Run 'ghpr init' to initialize it")
             return
 
         base = self.get_base()
         prs = self.get_prs()
 
-        print(f"Staging branch: {self.staging}")
-        print(f"Base branch:    {base}")
-        print(f"PRs staged:     {len(prs)}")
+        click.echo(f"Staging branch: {self.staging}")
+        click.echo(f"Base branch:    {base}")
+        click.echo(f"PRs staged:     {len(prs)}")
 
         if prs:
-            print("\nStaged PRs:")
+            click.echo("\nStaged PRs:")
             for pr in prs:
                 upstream = GitConfig.get(f"{self.config_prefix}.{pr}.upstream")
                 upstream_branch = GitConfig.get(
                     f"{self.config_prefix}.{pr}.upstream-branch",
                 )
-                print(f"  PR #{pr}")
+                click.echo(f"  PR #{pr}")
                 if upstream:
-                    print(f"    Upstream: {upstream}")
+                    click.echo(f"    Upstream: {upstream}")
                 if upstream_branch:
-                    print(f"    Branch:   {upstream_branch}")
+                    click.echo(f"    Branch:   {upstream_branch}")
 
 
-def main(argv: list[str] | None = None) -> None:
-    """Eponymous main."""
-    parser = argparse.ArgumentParser(
-        description="GitHub Pull Request landing tool for FreeBSD",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Initialize staging branch
-  ghpr init
+pass_ghpr = click.make_pass_decorator(GHPR)
 
-  # Stage a PR for landing
-  ghpr stage 1234
 
-  # If rebase has conflicts, resolve them and continue
-  git add <resolved-files>
-  ghpr stage --continue 1234
+@click.group
+@click.option(
+    "--dry-run",
+    default=False,
+    is_flag=True,
+    help=(
+        "Show what would be done without actually doing it "
+        "(automatically prints commands)"
+    ),
+)
+@click.option(
+    "--staging-branch",
+    default=DEFAULT_STAGING_BRANCH,
+)
+@click.option(
+    "--staging-remote",
+    default=DEFAULT_STAGING_REMOTE,
+    help="Name of remote used for `--staging-branch` (default: %(default)s)",
+)
+@click.option("--verbose", default=False, is_flag=True)
+@click.version_option(__version__)
+@click.pass_context
+def cli(
+    ctx: click.Context,
+    dry_run: bool,
+    staging_branch: str,
+    staging_remote: str,
+    verbose: bool,
+) -> None:
+    # ruff: noqa: D301
+    """GitHub Pull Request landing tool for FreeBSD.
 
-  # Stage multiple PRs
-  ghpr stage 1234
-  ghpr stage 1235
+    Examples:
+        # Initialize staging branch\n
+            % ghpr init
 
-  # Check status
-  ghpr status
+        # Stage a PR (1234) for landing.\n
+            % ghpr stage 1234
 
-  # Remove a PR if you change your mind
-  ghpr unstage 1234
+        # If a rebase has conflicts, resolve them and continue.\n
+            % git add <resolved-files>\n
+            % ghpr stage --continue 1234
 
-  # Push all staged PRs to FreeBSD
-  ghpr push
-        """,
+        # Stage multiple PRs (1234 and 1235)\n
+            % ghpr stage 1234\n
+            % ghpr stage 1235\n
+
+        # Check status\n
+            % ghpr status
+
+        # Unstage PR #1234 if you change your mind\n
+            % ghpr unstage 1234
+
+        # Push all staged PRs to FreeBSD\n
+            % ghpr push
+
+    """
+    if dry_run:
+        click.echo("DRY RUN MODE - No changes will be made\n")
+
+    ctx.obj = GHPR(
+        staging_branch=staging_branch,
+        staging_remote=staging_remote,
+        dry_run=dry_run,
+        verbose=verbose,
     )
 
-    parser.add_argument(
-        "--staging-branch",
-        default="staging",
-        help="Name of staging branch (default: %(default)s)",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-        help="Print all commands before executing them",
-    )
-    parser.add_argument(
-        "-n",
-        "--dry-run",
-        action="store_true",
-        help=(
-            "Show what would be done without actually doing it "
-            "(automatically prints commands)"
-        ),
-    )
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=f"%(prog)s {__version__}",
-    )
 
-    subparsers = parser.add_subparsers(
-        dest="command",
-        help="Command to run",
-        required=True,
-    )
-
-    # Init command
-    init_parser = subparsers.add_parser("init", help="Initialize staging branch")
-    init_parser.add_argument(
-        "-f",
-        "--force",
-        action="store_true",
-        help="Force re-initialization: delete existing staging branch and config",
-    )
-
-    # Stage command
-    stage_parser = subparsers.add_parser("stage", help="Stage a PR for landing")
-    stage_parser.add_argument("pr", type=int, help="PR number to stage")
-    stage_parser.add_argument(
-        "--reviewer",
-        default=getpass.getuser(),
-        help="Reviewer name for Reviewed-by trailer (default: %(default)s)",
-    )
-    stage_parser.add_argument(
-        "--repo",
-        default="freebsd-src",
-        help="GitHub repository name (default: %(default)s)",
-    )
-    stage_parser.add_argument("--editor", help="Editor for commit message fixups")
-    stage_parser.add_argument(
-        "--continue",
-        action="store_true",
-        dest="do_continue",
-        help="Continue an interrupted rebase",
-    )
-    stage_parser.add_argument(
-        "-f",
-        "--force",
-        action="store_true",
-        help="Force staging even if PR is already marked as staged",
-    )
-
-    # Push command
-    push_parser = subparsers.add_parser("push", help="Push staged PRs to FreeBSD")
-    push_parser.add_argument(
-        "--push-pr-branches",
-        action="store_true",
-        help="Also push to PR branches (experimental)",
-    )
-
-    # Unstage command
-    unstage_parser = subparsers.add_parser("unstage", help="Remove a staged PR")
-    unstage_parser.add_argument("pr", type=int, help="PR number to unstage")
-
-    # Status command
-    subparsers.add_parser("status", help="Show staging branch status")
-
-    args = parser.parse_args(args=argv)
-
-    ghpr = GHPR(
-        staging_branch=args.staging_branch,
-        verbose=args.verbose,
-        dry_run=args.dry_run,
-    )
-
-    if args.command == "init":
-        ghpr.init(force=args.force)
-    elif args.command == "stage":
-        ghpr.stage(
-            args.pr,
-            reviewer=args.reviewer,
-            repo=args.repo,
-            editor=args.editor,
-            do_continue=args.do_continue,
-            force=args.force,
-        )
-    elif args.command == "push":
-        ghpr.push(do_pr_branch_push=args.push_pr_branches)
-    elif args.command == "unstage":
-        ghpr.unstage(args.pr)
-    elif args.command == "status":
-        ghpr.status()
+@cli.command
+@click.option(
+    "--force",
+    default=False,
+    is_flag=True,
+    help="Force re-initialization: delete existing staging branch and config",
+)
+@pass_ghpr
+def init(ghpr: GHPR, force: bool) -> None:
+    """Initialize staging branch."""
+    ghpr.init(force=force)
 
 
-if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\nInterrupted", file=sys.stderr)
-        sys.exit(130)
-    except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
+@cli.command
+@click.option(
+    "--pr-branch-push",
+    is_flag=True,
+    help="Also push to PR branches (experimental)",
+)
+@pass_ghpr
+def push(ghpr: GHPR, pr_branch_push: bool) -> None:
+    """Push staged PRs to FreeBSD."""
+    ghpr.push(do_pr_branch_push=pr_branch_push)
+
+
+@cli.command
+@click.argument("pr", required=True, type=int)
+@click.option(
+    "--reviewer",
+    default=getpass.getuser(),
+    help="Reviewer name for Reviewed-by trailer (default: %(default)s)",
+)
+@click.option(
+    "--repo",
+    default="freebsd-src",
+    help="GitHub repository name (default: %(default)s)",
+)
+@click.option("--editor", default=None, help="Editor for commit message fixups")
+@click.option(
+    "--continue",
+    "do_continue",
+    default=False,
+    help="Continue an interrupted rebase",
+)
+@click.option(
+    "--force",
+    default=False,
+    is_flag=True,
+    help="Force staging even if PR is already marked as staged",
+)
+@pass_ghpr
+def stage(
+    ghpr: GHPR,
+    pr: int,
+    reviewer: str | None,
+    repo: str,
+    editor: str | None,
+    do_continue: bool,
+    force: bool,
+) -> None:
+    """Stage a PR for landing."""
+    ghpr.stage(
+        pr,
+        reviewer=reviewer,
+        repo=repo,
+        editor=editor,
+        do_continue=do_continue,
+        force=force,
+    )
+
+
+@cli.command
+@click.argument("pr", required=True, type=int)
+@pass_ghpr
+def unstage(ghpr: GHPR, pr: int) -> None:
+    """Remove a staged PR."""
+    ghpr.unstage(pr)
+
+
+@cli.command
+@pass_ghpr
+def status(ghpr: GHPR) -> None:
+    """Show staging branch status."""
+    ghpr.status()
