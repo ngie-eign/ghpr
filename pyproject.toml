@@ -43,3 +43,54 @@ where = ["src"]
 [build-system]
 requires = ["setuptools", "setuptools-scm", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.coverage.html]
+directory = "htmlcov"
+
+[tool.coverage.run]
+branch = true
+source = ["src/"]
+
+[tool.pytest.ini_options]
+timeout = 10
+
+[tool.setuptools]
+package-dir = {"" = "src/"}
+
+[tool.tox]
+legacy_tox_ini = """
+[tox]
+min_version = 4.0
+env_list =
+    coverage
+    py311
+    py312
+    py313
+    py314
+    py315
+
+[testenv]
+deps =
+    pytest
+    pytest-forked
+    pytest-timeout
+    GitPython>=3.1.46
+commands =
+    {envpython} -m pytest {posargs:-v tests}
+
+[testenv:coverage]
+deps =
+    {[testenv]deps}
+    coverage
+    pytest-cov
+commands =
+    # TODO: raise the coverage bar above 50%.
+    {envpython} -m pytest --cov=ghpr --cov-fail-under=50 --cov-report=html --cov-report=term \
+        {posargs:-vvvv tests}
+
+[testenv:type]
+deps =
+    mypy
+commands =
+    {envpython} -m mypy {posargs:src}
+"""
