@@ -4,6 +4,8 @@ Unified tool to land GitHub pull requests into FreeBSD repositories.
 Combines the functionality of ghpr-init.sh, ghpr-stage.sh, and ghpr-push.sh.
 
 Copyright (c) 2026 Warner Losh <imp@FreeBSD.org>
+Copyright (c) 2026 Enji Cooper <ngie@FreeBSD.org>
+
 SPDX-License-Identifier: BSD-2-Clause
 """
 
@@ -22,6 +24,7 @@ import getpass
 import json
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 
 import click
@@ -32,6 +35,11 @@ DEFAULT_FREEBSD_SRC_GITHUB_REPO = "freebsd/freebsd-src"
 DEFAULT_STAGING_BRANCH = "staging"
 DEFAULT_STAGING_REMOTE = "freebsd"
 LOGGER = logging.get_logger("ghpr")
+
+ALLOWED_STAGING_URLS = [
+    "git@gitrepo.freebsd.org:src.git",
+    "ssh://git@gitrepo.freebsd.org/src.git",
+]
 
 
 class GitConfig:
@@ -433,41 +441,31 @@ class GHPR:
         - .. exists.
         - .. points to one of the expected URLs.
         """
-        allowed_urls = [
-            "git@gitrepo.freebsd.org:src.git",
-            "ssh://git@gitrepo.freebsd.org/src.git",
-        ]
-
         # Check if remote exists
         try:
             result = GitHelper.run(
                 ["remote", "get-url", self.staging_remote],
                 capture=True,
-                check=False,
+                check=True,
                 safe=True,
             )
-            if result.returncode != 0:
-                self.die(
-                    f"No {self.staging_remote!r} remote found.\n"
-                    f"Please add it with:\n"
-                    f"  git remote add {self.staging_remote} {allowed_urls[0]}",
-                )
-            fetch_url = result.stdout.strip()
-        except Exception:
+        except subprocess.CalledProcessError:
             self.die(
-                f"Failed to check {self.staging_remote!r} remote.\n"
-                f"Please ensure it exists and points to one of the following:\n"
-                f"  {allowed_urls}",
+                f"No {self.staging_remote!r} remote found.\n"
+                f"Please add it with:\n"
+                f"  git remote add {self.staging_remote} {ALLOWED_STAGING_URLS[0]}",
             )
+        else:
+            fetch_url = result.stdout.strip()
 
         # Check fetch URL
-        if fetch_url not in allowed_urls:
+        if fetch_url not in ALLOWED_STAGING_URLS:
             self.die(
                 f"{self.staging_remote!r} remote fetch URL is incorrect.\n"
-                f"Allowed URLs: {allowed_urls!r}\n"
+                f"Allowed URLs: {ALLOWED_STAGING_URLS!r}\n"
                 f"Got:      {fetch_url}\n"
                 f"Please update it with:\n"
-                f"  git remote set-url {self.staging_remote} {allowed_urls[0]}",
+                f"  git remote set-url {self.staging_remote} {ALLOWED_STAGING_URLS[0]}",
             )
 
         # Check push URL
@@ -483,13 +481,14 @@ class GHPR:
         except Exception:
             push_url = fetch_url
 
-        if push_url not in allowed_urls:
+        if push_url not in ALLOWED_STAGING_URLS:
             self.die(
                 f"'{self.staging_remote}' remote push URL is incorrect.\n"
-                f"Allowed URLs: {allowed_urls!r}\n"
+                f"Allowed URLs: {ALLOWED_STAGING_URLS!r}\n"
                 f"Got:      {push_url}\n"
                 f"Please update it with:\n"
-                f"  git remote set-url --push {self.staging_remote} {allowed_urls[0]}",
+                f"  git remote set-url --push {self.staging_remote} "
+                f"{ALLOWED_STAGING_URLS[0]}",
             )
 
         if self.verbose:
@@ -528,12 +527,14 @@ class GHPR:
             try:
                 GitHelper.checkout(self.staging, create=True, base=self.base)
             except subprocess.CalledProcessError:
+                click.echo(traceback.format_exc())
                 self.die(f"Can't create {self.staging}")
 
         try:
             GitConfig.set(self.config_prefix, "true", config_type="bool")
             GitConfig.set(f"{self.config_prefix}.base", self.base)
         except subprocess.CalledProcessError:
+            click.echo(traceback.format_exc())
             self.die("Can't annotate branch config")
 
         click.echo(f"Staging branch {self.staging} initialized successfully")
@@ -639,7 +640,7 @@ class GHPR:
 
             # Continue the rebase
             try:
-                GitHelper.run(["rebase", "--continue"])
+                GitHelper.run(["rebase", "--continue"], check=True)
             except subprocess.CalledProcessError:
                 self.die(
                     "Rebase continue failed. "
@@ -1020,7 +1021,7 @@ class GHPR:
         if not self.is_initialized():
             click.echo(f"Staging branch '{self.staging}' is not initialized")
             click.echo("Run 'ghpr init' to initialize it")
-            return
+            sys.exit(2)
 
         base = self.get_base()
         prs = self.get_prs()
