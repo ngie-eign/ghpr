@@ -4,6 +4,8 @@ Unified tool to land GitHub pull requests into FreeBSD repositories.
 Combines the functionality of ghpr-init.sh, ghpr-stage.sh, and ghpr-push.sh.
 
 Copyright (c) 2026 Warner Losh <imp@FreeBSD.org>
+Copyright (c) 2026 Enji Cooper <ngie@FreeBSD.org>
+
 SPDX-License-Identifier: BSD-2-Clause
 """
 
