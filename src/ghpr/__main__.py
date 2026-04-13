@@ -459,7 +459,7 @@ class GHPR:
             fetch_url = result.stdout.strip()
 
         # Check fetch URL
-        if fetch_url not in ALLOWED_STAGING_URLS:
+        if fetch_url.lower() not in ALLOWED_STAGING_URLS:
             self.die(
                 f"{self.staging_remote!r} remote fetch URL is incorrect.\n"
                 f"Allowed URLs: {ALLOWED_STAGING_URLS!r}\n"
@@ -481,7 +481,7 @@ class GHPR:
         except Exception:
             push_url = fetch_url
 
-        if push_url not in ALLOWED_STAGING_URLS:
+        if push_url.lower() not in ALLOWED_STAGING_URLS:
             self.die(
                 f"'{self.staging_remote}' remote push URL is incorrect.\n"
                 f"Allowed URLs: {ALLOWED_STAGING_URLS!r}\n"
