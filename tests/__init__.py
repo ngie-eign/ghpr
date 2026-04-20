@@ -1,1 +1,36 @@
-"""File exists to mute complaints from `ruff check`, etc."""
+"""Common test logic."""
+
+import os
+from contextlib import contextmanager
+from pathlib import Path
+
+import git
+
+os.environ["GIT_PYTHON_TRACE"] = "1"
+
+
+@contextmanager
+def sandbox(new_path: Path) -> None:
+    """Contextmanager for changing directories temporarily in a test.
+
+    Args:
+        new_path: path to chdir to.
+
+    """
+    old_path = Path.cwd()
+    os.chdir(new_path)
+    try:
+        yield
+    finally:
+        os.chdir(old_path)
+
+
+def setup_freebsd_remote(repo_dir: Path, remote: str) -> None:
+    """Fixture that sets up a bogus repo with the https://."""
+    repo = git.Repo(repo_dir)
+    repo.create_remote("freebsd", remote)
+
+
+def format_result(result: ...) -> str:
+    """Format results from `click.invoke(..)`."""
+    return f"{result=} {result.output=}"

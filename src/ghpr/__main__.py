@@ -21,25 +21,27 @@ from __future__ import annotations
 
 import contextlib
 import getpass
-import json
 import subprocess
 import sys
 import traceback
 from pathlib import Path
+from typing import Self
 
 import click
 
 from . import __version__, logging
-
-DEFAULT_FREEBSD_SRC_GITHUB_REPO = "freebsd/freebsd-src"
-DEFAULT_STAGING_BRANCH = "staging"
-DEFAULT_STAGING_REMOTE = "freebsd"
-LOGGER = logging.get_logger("ghpr")
+from .gh import GHHelper
 
 ALLOWED_STAGING_URLS = [
     "git@gitrepo.freebsd.org:src.git",
     "ssh://git@gitrepo.freebsd.org/src.git",
 ]
+DEFAULT_BASE = "main"
+DEFAULT_FREEBSD_SRC_GITHUB_REPO = "freebsd/freebsd-src"
+DEFAULT_STAGING_BRANCH = "staging"
+DEFAULT_STAGING_REMOTE = "freebsd"
+LOGGER = logging.get_logger("ghpr")
+
 
 
 class GitConfig:
@@ -286,131 +288,38 @@ class GitHelper:
         GitHelper.run(cmd)
 
 
-class GHHelper:
-    """Helper class for GitHub CLI operations."""
-
-    verbose = False
-    dry_run = False
-
-    @staticmethod
-    def _print_cmd(cmd: list[str]) -> None:
-        """Print command if verbose or dry-run mode is enabled."""
-        if GHHelper.verbose or GHHelper.dry_run:
-            click.echo(f"+ {' '.join(cmd)}")
-
-    @staticmethod
-    def pr_checkout(pr_number: int, branch: str) -> None:
-        """Checkout a PR into a branch."""
-        cmd = [
-            "gh",
-            "pr",
-            "--repo",
-            DEFAULT_FREEBSD_SRC_GITHUB_REPO,
-            "checkout",
-            str(pr_number),
-            "-b",
-            branch,
-        ]
-        GHHelper._print_cmd(cmd)
-        if GHHelper.dry_run:
-            return
-        subprocess.run(cmd, check=True)
-
-    @staticmethod
-    def gh_pr(
-        command: str,
-        pr: int,
-        args: list[str],
-    ) -> subprocess.CompletedProcess | None:
-        """Run `gh pr`.
-
-        This method runs `gh pr` with an appropriate `--repo` argument, combined with
-        the provided `args`.
-
-        Args:
-            command: commands passed verbatim to `gh pr`, e.g., "view", "close", etc.
-            pr: GitHub PR #, e.g., 2048.
-            args: arguments to pass directly to `gh pr`.
-
-        Returns:
-            A `subprocess.CompletedProcess` object representing the result of the
-            `gh pr` command, or `None` if `--dry-run` was specified previously.
-
-        """
-        cmd = [
-            "gh",
-            "pr",
-            "--repo",
-            DEFAULT_FREEBSD_SRC_GITHUB_REPO,
-            command,
-            str(pr),
-            *args,
-        ]
-        GHHelper._print_cmd(cmd)
-        if GHHelper.dry_run:
-            return None
-        return subprocess.run(cmd, capture_output=True, check=True, text=True)
-
-    @staticmethod
-    def pr_edit(
-        pr_number: int,
-        add_label: str | None = None,
-        remove_label: str | None = None,
-    ) -> None:
-        """Edit PR metadata."""
-        args = []
-        if add_label:
-            args.extend(["--add-label", add_label])
-        if remove_label:
-            args.extend(["--remove-label", remove_label])
-        GHHelper.gh_pr("edit", pr_number, args)
-
-    @staticmethod
-    def pr_close(pr_number: int, comment: str | None = None) -> None:
-        """Close a PR."""
-        args = ["--comment", comment] if comment else []
-        GHHelper.gh_pr("close", pr_number, args)
-
-    @staticmethod
-    def pr_view(pr_number: int) -> dict:
-        """Get PR information including labels, assignees, and reviews."""
-        if GHHelper.dry_run:
-            return {"labels": [], "assignees": [], "reviews": []}
-        args = [
-            "--json",
-            "labels,assignees,reviews",
-        ]
-        result = GHHelper.gh_pr("view", pr_number, args)
-        return json.loads(result.stdout)
-
-
 class GHPR:
     """Main class for GitHub PR landing operations."""
 
-    def __init__(  # noqa: D107
-        self,
+    def __init__(
+        self: Self,
+        dry_run: bool = False,
+        base: str = DEFAULT_BASE,
+        freebsd_src_repo: str = DEFAULT_FREEBSD_SRC_GITHUB_REPO,
         staging_branch: str = DEFAULT_STAGING_BRANCH,
         staging_remote: str = DEFAULT_STAGING_REMOTE,
         verbose: bool = False,
-        dry_run: bool = False,
     ) -> None:
-        self.base = "main"
 
         # Set verbose and dry_run on all helper classes
         GitConfig.verbose = verbose
         GitConfig.dry_run = dry_run
         GitHelper.verbose = verbose
         GitHelper.dry_run = dry_run
-        GHHelper.verbose = verbose
-        GHHelper.dry_run = dry_run
+        self.ghhelper = GHHelper(
+            dry_run=dry_run,
+            freebsd_src_repo=freebsd_src_repo,
+            verbose=verbose,
+        )
 
+        self.base = base
+        self.dry_run = dry_run
+        self.config_prefix = f"branch.{staging_branch}.opabinia"
+        self.freebsd_src_repo = freebsd_src_repo
         self.staging = staging_branch
         self.staging_remote = staging_remote
-
-        self.config_prefix = f"branch.{self.staging}.opabinia"
-
         self.verbose = verbose
-        self.dry_run = dry_run
+
         if dry_run:
             click.echo("DRY RUN MODE - No changes will be made\n")
 
@@ -572,7 +481,6 @@ class GHPR:
         self,
         pr_number: int,
         reviewer: str | None = None,
-        repo: str = "freebsd-src",
         editor: str | None = None,
         do_continue: bool = False,
         force: bool = False,
@@ -597,7 +505,7 @@ class GHPR:
                 LOGGER.error("PR #%d is already staged", pr_number)
 
                 try:
-                    pr_info = GHHelper.pr_view(pr_number)
+                    pr_info = self.ghhelper.pr_view(pr_number)
                     # Show assignees if any
                     assignees = pr_info.get("assignees", [])
                     if assignees:
@@ -611,7 +519,7 @@ class GHPR:
 
             # Check if PR has 'staged' label but isn't actually staged
             try:
-                pr_info = GHHelper.pr_view(pr_number)
+                pr_info = self.ghhelper.pr_view(pr_number)
                 labels = [label["name"] for label in pr_info.get("labels", [])]
 
                 if "staged" in labels:
@@ -677,7 +585,7 @@ class GHPR:
             # Add 'staged' label to GitHub PR
             LOGGER.info("Adding 'staged' label to PR #%d...", pr_number)
             try:
-                GHHelper.pr_edit(pr_number, add_label="staged")
+                self.ghhelper.pr_edit(pr_number, add_label="staged")
             except Exception:
                 LOGGER.warning(
                     "failed to add 'staged' label to PR #%d",
@@ -687,7 +595,7 @@ class GHPR:
 
             # Show review information
             try:
-                pr_info = GHHelper.pr_view(pr_number)
+                pr_info = self.ghhelper.pr_view(pr_number)
                 reviews = pr_info.get("reviews", [])
                 approvers = [
                     r["author"]["login"] for r in reviews if r["state"] == "APPROVED"
@@ -724,7 +632,7 @@ class GHPR:
 
         # Checkout the PR
         try:
-            GHHelper.pr_checkout(pr_number, pr_branch)
+            self.ghhelper.pr_checkout(pr_number, pr_branch)
         except subprocess.CalledProcessError:
             self.die(f"Failed to checkout PR #{pr_number}")
 
@@ -735,7 +643,7 @@ class GHPR:
             upstream_branch = upstream_branch.replace("refs/heads/", "")
 
         # Build trailer for commits
-        pr_url = f"https://github.com/freebsd/{repo}/pull/{pr_number}"
+        pr_url = f"https://github.com/{self.freebsd_src_repo}/pull/{pr_number}"
         trailers = (
             f'--trailer "Reviewed-by: {reviewer}" --trailer "Pull-Request: {pr_url}"'
         )
@@ -794,7 +702,7 @@ class GHPR:
         # Add 'staged' label to GitHub PR
         LOGGER.info("Adding 'staged' label to PR #%d...", pr_number)
         try:
-            GHHelper.pr_edit(pr_number, add_label="staged")
+            self.ghhelper.pr_edit(pr_number, add_label="staged")
         except Exception:
             LOGGER.warning(
                 "could not add 'staged' label to PR #%d",
@@ -804,7 +712,7 @@ class GHPR:
 
         # Show review information
         try:
-            pr_info = GHHelper.pr_view(pr_number)
+            pr_info = self.ghhelper.pr_view(pr_number)
             reviews = pr_info.get("reviews", [])
             approvers = [
                 r["author"]["login"] for r in reviews if r["state"] == "APPROVED"
@@ -885,8 +793,12 @@ class GHPR:
                         "This PR has been merged to FreeBSD's `main` branch. "
                         "These changes will appear shortly on our GitHub mirror."
                     )
-                    GHHelper.pr_edit(pr_num, add_label="merged", remove_label="staged")
-                    GHHelper.pr_close(
+                    self.ghhelper.pr_edit(
+                        pr_num,
+                        add_label="merged",
+                        remove_label="staged",
+                    )
+                    self.ghhelper.pr_close(
                         pr_num,
                         comment=comment,
                     )
@@ -997,7 +909,7 @@ class GHPR:
         # Remove 'staged' label from GitHub PR
         click.echo(f"Removing 'staged' label from PR #{pr_number}...")
         try:
-            GHHelper.pr_edit(pr_number, remove_label="staged")
+            self.ghhelper.pr_edit(pr_number, remove_label="staged")
         except Exception:
             LOGGER.warning(
                 "Failed to remove 'staged' label from PR #%d",
@@ -1058,8 +970,14 @@ pass_ghpr = click.make_pass_decorator(GHPR)
     ),
 )
 @click.option(
+    "--freebsd-src-repo",
+    default=DEFAULT_FREEBSD_SRC_GITHUB_REPO,
+    help="GitHub repository name (default: %(default)s)",
+)
+@click.option(
     "--staging-branch",
     default=DEFAULT_STAGING_BRANCH,
+    help="Branch to use when staging changes (default: %(default)s)",
 )
 @click.option(
     "--staging-remote",
@@ -1072,6 +990,7 @@ pass_ghpr = click.make_pass_decorator(GHPR)
 def cli(
     ctx: click.Context,
     dry_run: bool,
+    freebsd_src_repo: str,
     staging_branch: str,
     staging_remote: str,
     verbose: bool,
@@ -1108,9 +1027,10 @@ def cli(
         click.echo("DRY RUN MODE - No changes will be made\n")
 
     ctx.obj = GHPR(
+        dry_run=dry_run,
+        freebsd_src_repo=freebsd_src_repo,
         staging_branch=staging_branch,
         staging_remote=staging_remote,
-        dry_run=dry_run,
         verbose=verbose,
     )
 
@@ -1147,11 +1067,6 @@ def push(ghpr: GHPR, pr_branch_push: bool) -> None:
     default=getpass.getuser(),
     help="Reviewer name for Reviewed-by trailer (default: %(default)s)",
 )
-@click.option(
-    "--repo",
-    default="freebsd-src",
-    help="GitHub repository name (default: %(default)s)",
-)
 @click.option("--editor", default=None, help="Editor for commit message fixups")
 @click.option(
     "--continue",
@@ -1170,7 +1085,6 @@ def stage(
     ghpr: GHPR,
     pr: int,
     reviewer: str | None,
-    repo: str,
     editor: str | None,
     do_continue: bool,
     force: bool,
@@ -1178,11 +1092,10 @@ def stage(
     """Stage a PR for landing."""
     ghpr.stage(
         pr,
-        reviewer=reviewer,
-        repo=repo,
-        editor=editor,
         do_continue=do_continue,
+        editor=editor,
         force=force,
+        reviewer=reviewer,
     )
 
 
