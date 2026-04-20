@@ -31,3 +31,7 @@ repos:
     rev: v1.38.0
     hooks:
       - id: yamllint
+  - repo: https://github.com/abravalheri/validate-pyproject
+    rev: v0.25
+    hooks:
+      - id: validate-pyproject
