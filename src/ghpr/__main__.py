@@ -11,11 +11,8 @@ SPDX-License-Identifier: BSD-2-Clause
 
 # These issues are [generally] annoying noise from `ruff`.
 #
-# ruff: noqa: BLE001, FBT001, FBT002, S603
+# ruff: noqa: S603
 
-# These issues should be fixed.
-#
-# ruff: noqa: C901, PLR0912, PLR0913, PLR0915
 
 from __future__ import annotations
 
@@ -31,6 +28,7 @@ import click
 
 from . import __version__, logging
 from .gh import GHHelper
+from .git import GitConfig, GitHelper
 
 ALLOWED_STAGING_URLS = [
     "git@gitrepo.freebsd.org:src.git",
@@ -41,251 +39,6 @@ DEFAULT_FREEBSD_SRC_GITHUB_REPO = "freebsd/freebsd-src"
 DEFAULT_STAGING_BRANCH = "staging"
 DEFAULT_STAGING_REMOTE = "freebsd"
 LOGGER = logging.get_logger("ghpr")
-
-
-
-class GitConfig:
-    """Helper class for git config operations."""
-
-    verbose = False
-    dry_run = False
-
-    @staticmethod
-    def _print_cmd(cmd: list[str]) -> None:
-        """Print command if verbose or dry-run mode is enabled."""
-        if GitConfig.verbose or GitConfig.dry_run:
-            click.echo(f"+ {' '.join(cmd)}")
-
-    @staticmethod
-    def get(key: str, default: str | None = None) -> str | None:
-        """Get a git config value."""
-        cmd = ["git", "config", "--get", key]
-        GitConfig._print_cmd(cmd)
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-            return result.stdout.strip()
-        except subprocess.CalledProcessError:
-            return default
-
-    @staticmethod
-    def get_all(key: str) -> list[str]:
-        """Get all values for a git config key."""
-        cmd = ["git", "config", "--get-all", key]
-        GitConfig._print_cmd(cmd)
-        if GitConfig.dry_run:
-            return []
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            check=False,  # The section might not exist
-            text=True,
-        )
-        return [
-            line.strip()
-            for line in result.stdout.strip().splitlines(keepends=False)
-            if line.strip()
-        ]
-
-    @staticmethod
-    def set(
-        key: str,
-        value: str,
-        config_type: str | None = None,
-        add: bool = False,
-    ) -> None:
-        """Set a git config value."""
-        cmd = ["git", "config"]
-        if config_type:
-            cmd.extend(["--type", config_type])
-        if add:
-            cmd.append("--add")
-        cmd.extend([key, value])
-        GitConfig._print_cmd(cmd)
-        if GitConfig.dry_run:
-            return
-        subprocess.run(cmd, check=True)
-
-    @staticmethod
-    def unset(key: str, value: str | None = None) -> None:
-        """Unset a git config value."""
-        cmd = ["git", "config", "--unset"]
-        cmd.append(key)
-        if value:
-            cmd.append(value)
-        GitConfig._print_cmd(cmd)
-        if GitConfig.dry_run:
-            return
-        with contextlib.suppress(subprocess.CalledProcessError):  # Key might not exist
-            subprocess.run(cmd, check=True, stderr=subprocess.DEVNULL)
-
-    @staticmethod
-    def remove_section(section: str) -> None:
-        """Remove a git config section."""
-        cmd = ["git", "config", "--remove-section", section]
-        GitConfig._print_cmd(cmd)
-        if GitConfig.dry_run:
-            return
-        subprocess.run(
-            cmd,
-            check=False,  # The section might not exist
-            stderr=subprocess.DEVNULL,
-        )
-
-
-class GitHelper:
-    """Helper class for git operations."""
-
-    verbose = False
-    dry_run = False
-
-    @staticmethod
-    def _print_cmd(cmd: list[str]) -> None:
-        """Print command if verbose or dry-run mode is enabled."""
-        if GitHelper.verbose or GitHelper.dry_run:
-            click.echo(f"+ {' '.join(cmd)}")
-
-    @staticmethod
-    def run(
-        args: list[str],
-        check: bool = True,
-        capture: bool = False,
-        safe: bool = False,
-    ) -> subprocess.CompletedProcess:
-        """Run a git command."""
-        cmd = ["git", *args]
-        GitHelper._print_cmd(cmd)
-        if GitHelper.dry_run and not safe:
-            # In dry-run mode, don't execute anything
-            class FakeResult:
-                stdout = ""
-                stderr = ""
-                returncode = 0
-
-            return FakeResult()
-        if capture:
-            return subprocess.run(cmd, capture_output=True, text=True, check=check)
-        return subprocess.run(cmd, check=check)
-
-    @staticmethod
-    def branch_exists(branch: str) -> bool:
-        """Check if a branch exists."""
-        cmd = ["git", "rev-parse", "--verify", branch]
-        GitHelper._print_cmd(cmd)
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            check=False,
-        )
-        return proc.returncode == 0
-
-    @staticmethod
-    def checkout(branch: str, create: bool = False, base: str | None = None) -> None:
-        """Checkout a branch, optionally creating it."""
-        cmd = ["checkout"]
-        if create:
-            cmd.append("-b")
-        cmd.append(branch)
-        if base:
-            cmd.append(base)
-        GitHelper.run(cmd)
-
-    @staticmethod
-    def rebase(
-        base: str,
-        onto: str | None = None,
-        interactive: bool = False,
-        exec_cmd: str | None = None,
-    ) -> None:
-        """Rebase current branch."""
-        cmd = ["rebase"]
-        if interactive:
-            cmd.append("-i")
-        if onto:
-            cmd.extend(["--onto", onto])
-        if exec_cmd:
-            cmd.extend(["--exec", exec_cmd])
-        cmd.append(base)
-        GitHelper.run(cmd)
-
-    @staticmethod
-    def push(
-        remote: str,
-        refspec: str,
-        force: bool = False,
-        push_option: str | None = None,
-    ) -> bool:
-        """Push to remote, return True if successful."""
-        cmd = ["push"]
-        if push_option:
-            cmd.extend(["--push-option", push_option])
-        if force:
-            cmd.append("--force")
-        cmd.extend([remote, refspec])
-        try:
-            GitHelper.run(cmd)
-        except subprocess.CalledProcessError:
-            return False
-        else:
-            return True
-
-    @staticmethod
-    def fetch(remote: str) -> None:
-        """Fetch from remote."""
-        GitHelper.run(["fetch", remote], safe=True)
-
-    @staticmethod
-    def pull(rebase: bool = True) -> None:
-        """Pull from current upstream."""
-        cmd = ["pull"]
-        if rebase:
-            cmd.append("--rebase")
-        GitHelper.run(cmd)
-
-    @staticmethod
-    def delete_branch(branch: str, force: bool = True) -> None:
-        """Delete a branch."""
-        flag = "-D" if force else "-d"
-        GitHelper.run(
-            ["branch", flag, branch],
-            check=False,  # The branch might not exist
-        )
-
-    @staticmethod
-    def move_branch(branch: str, target: str = "HEAD") -> None:
-        """Force-move a branch to a specific commit and check it out."""
-        # Force-move the branch pointer
-        GitHelper.run(["branch", "-f", branch, target])
-        # Check out the branch
-        GitHelper.run(["checkout", branch])
-
-    @staticmethod
-    def get_commits_with_trailer(
-        base: str,
-        head: str,
-        trailer: str,
-        value: str,
-    ) -> list[str]:
-        """Get commit hashes that contain a specific trailer value."""
-        cmd = [
-            "log",
-            "--format=%H",
-            "--grep",
-            f"^{trailer}: .*{value}",
-            f"{base}..{head}",
-        ]
-        result = GitHelper.run(cmd, capture=True, safe=True)
-        return [
-            line.strip()
-            for line in result.stdout.strip().splitlines(keepends=False)
-            if line.strip()
-        ]
-
-    @staticmethod
-    def cherry_pick(commits: list[str]) -> None:
-        """Cherry-pick commits."""
-        cmd = ["cherry-pick"]
-        cmd.extend(commits)
-        GitHelper.run(cmd)
 
 
 class GHPR:
@@ -300,12 +53,11 @@ class GHPR:
         staging_remote: str = DEFAULT_STAGING_REMOTE,
         verbose: bool = False,
     ) -> None:
-
-        # Set verbose and dry_run on all helper classes
-        GitConfig.verbose = verbose
-        GitConfig.dry_run = dry_run
-        GitHelper.verbose = verbose
-        GitHelper.dry_run = dry_run
+        self.githelper = GitHelper(
+            dry_run=dry_run,
+            verbose=verbose,
+        )
+        self.gitconfig = GitConfig(dry_run=dry_run, verbose=verbose)
         self.ghhelper = GHHelper(
             dry_run=dry_run,
             freebsd_src_repo=freebsd_src_repo,
@@ -330,18 +82,18 @@ class GHPR:
 
     def is_initialized(self) -> bool:
         """Check if staging branch is initialized."""
-        return GitConfig.get(self.config_prefix) == "true"
+        return self.gitconfig.get(self.config_prefix) == "true"
 
     def get_base(self) -> str:
         """Get the base branch for staging."""
-        base = GitConfig.get(f"{self.config_prefix}.base")
+        base = self.gitconfig.get(f"{self.config_prefix}.base")
         if not base:
             self.die(f"No base set on {self.staging}")
         return base
 
     def get_prs(self) -> list[str]:
         """Get list of PRs in staging branch."""
-        return GitConfig.get_all(f"{self.config_prefix}.prs")
+        return self.gitconfig.get_all(f"{self.config_prefix}.prs")
 
     def _check_staging_remote(self) -> None:
         """Verify the staging remote.
@@ -352,7 +104,7 @@ class GHPR:
         """
         # Check if remote exists
         try:
-            result = GitHelper.run(
+            result = self.githelper.run(
                 ["remote", "get-url", self.staging_remote],
                 capture=True,
                 check=True,
@@ -379,7 +131,7 @@ class GHPR:
 
         # Check push URL
         try:
-            result = GitHelper.run(
+            result = self.githelper.run(
                 ["remote", "get-url", "--push", self.staging_remote],
                 capture=True,
                 check=False,
@@ -410,38 +162,38 @@ class GHPR:
 
         if force:
             click.echo("Force re-initialization requested")
-            if self.is_initialized() or GitHelper.branch_exists(self.staging):
+            if self.is_initialized() or self.githelper.branch_exists(self.staging):
                 click.echo(f"Cleaning up existing {self.staging} branch and config...")
                 # Remove all config for this staging branch
-                GitConfig.remove_section(self.config_prefix)
+                self.gitconfig.remove_section(self.config_prefix)
                 # Checkout base branch if we're currently on staging
                 # (can't delete a branch we're on)
-                GitHelper.checkout(self.base)
+                self.githelper.checkout(self.base)
                 # Delete the branch if it exists
-                GitHelper.delete_branch(self.staging)
+                self.githelper.delete_branch(self.staging)
                 click.echo("Cleanup complete")
 
         if self.is_initialized():
             click.echo(f"Branch {self.staging} has already been initialized")
             return
 
-        if GitHelper.branch_exists(self.staging):
+        if self.githelper.branch_exists(self.staging):
             click.echo(
                 f"Branch {self.staging} already exists. "
                 f"Skipping creation, but rebasing to {self.base}",
             )
-            GitHelper.rebase(self.base, interactive=False)
+            self.githelper.rebase(self.base)
         else:
             click.echo(f"Creating {self.staging} from {self.base} to land changes")
             try:
-                GitHelper.checkout(self.staging, create=True, base=self.base)
+                self.githelper.checkout(self.staging, create=True, base=self.base)
             except subprocess.CalledProcessError:
                 click.echo(traceback.format_exc())
                 self.die(f"Can't create {self.staging}")
 
         try:
-            GitConfig.set(self.config_prefix, "true", config_type="bool")
-            GitConfig.set(f"{self.config_prefix}.base", self.base)
+            self.gitconfig.set(self.config_prefix, "true", config_type="bool")
+            self.gitconfig.set(f"{self.config_prefix}.base", self.base)
         except subprocess.CalledProcessError:
             click.echo(traceback.format_exc())
             self.die("Can't annotate branch config")
@@ -451,9 +203,9 @@ class GHPR:
     def update_to_upstream(self) -> None:
         """Update base branch and rebase staging onto it."""
         click.echo(f"Updating {self.base} and rebasing {self.staging}...")
-        GitHelper.checkout(self.base)
-        GitHelper.pull(rebase=True)
-        GitHelper.rebase(self.base, interactive=True)
+        self.githelper.checkout(self.base)
+        self.githelper.pull(rebase=True)
+        self.githelper.rebase(self.base, interactive=True)
 
     def _checkstyle(self, base: str, tip: str) -> None:
         """Run style checker if it exists.
@@ -548,7 +300,7 @@ class GHPR:
 
             # Continue the rebase
             try:
-                GitHelper.run(["rebase", "--continue"], check=True)
+                self.githelper.run(["rebase", "--continue"], check=True)
             except subprocess.CalledProcessError:
                 self.die(
                     "Rebase continue failed. "
@@ -557,20 +309,24 @@ class GHPR:
 
             # Save PR metadata if not already saved
             if str(pr_number) not in prs:
-                upstream = GitConfig.get(f"branch.{pr_branch}.pushRemote")
-                upstream_branch = GitConfig.get(f"branch.{pr_branch}.merge")
+                upstream = self.gitconfig.get(f"branch.{pr_branch}.pushRemote")
+                upstream_branch = self.gitconfig.get(f"branch.{pr_branch}.merge")
                 if upstream_branch:
                     upstream_branch = upstream_branch.replace("refs/heads/", "")
 
-                GitConfig.set(f"{self.config_prefix}.prs", str(pr_number), add=True)
+                self.gitconfig.set(
+                    f"{self.config_prefix}.prs",
+                    str(pr_number),
+                    add=True,
+                )
                 if upstream:
-                    GitConfig.set(
+                    self.gitconfig.set(
                         f"{self.config_prefix}.{pr_number}.upstream",
                         upstream,
                         add=True,
                     )
                 if upstream_branch:
-                    GitConfig.set(
+                    self.gitconfig.set(
                         f"{self.config_prefix}.{pr_number}.upstream-branch",
                         upstream_branch,
                         add=True,
@@ -578,7 +334,7 @@ class GHPR:
 
             # Move staging branch to new tip
             LOGGER.info("Moving %s to include PR #%d...", self.staging, pr_number)
-            GitHelper.move_branch(self.staging)
+            self.githelper.move_branch(self.staging)
 
             self._checkstyle(base, self.staging)
 
@@ -622,13 +378,13 @@ class GHPR:
         if not prs:
             self.update_to_upstream()
         else:
-            GitHelper.checkout(self.staging)
+            self.githelper.checkout(self.staging)
 
         # Create PR branch
         LOGGER.info("Checking out PR #%d into %s", pr_number, pr_branch)
 
         # Delete old PR branch if it exists
-        GitHelper.delete_branch(pr_branch)
+        self.githelper.delete_branch(pr_branch)
 
         # Checkout the PR
         try:
@@ -637,8 +393,8 @@ class GHPR:
             self.die(f"Failed to checkout PR #{pr_number}")
 
         # Get upstream info
-        upstream = GitConfig.get(f"branch.{pr_branch}.pushRemote")
-        upstream_branch = GitConfig.get(f"branch.{pr_branch}.merge")
+        upstream = self.gitconfig.get(f"branch.{pr_branch}.pushRemote")
+        upstream_branch = self.gitconfig.get(f"branch.{pr_branch}.merge")
         if upstream_branch:
             upstream_branch = upstream_branch.replace("refs/heads/", "")
 
@@ -659,7 +415,7 @@ class GHPR:
         # Rebase onto staging with commit amendments
         LOGGER.info("Rebasing %s onto %s", pr_branch, self.staging)
         try:
-            GitHelper.rebase(
+            self.githelper.rebase(
                 base,
                 onto=self.staging,
                 interactive=True,
@@ -679,15 +435,15 @@ class GHPR:
             sys.exit(1)
 
         # Save PR metadata
-        GitConfig.set(f"{self.config_prefix}.prs", str(pr_number), add=True)
+        self.gitconfig.set(f"{self.config_prefix}.prs", str(pr_number), add=True)
         if upstream:
-            GitConfig.set(
+            self.gitconfig.set(
                 f"{self.config_prefix}.{pr_number}.upstream",
                 upstream,
                 add=True,
             )
         if upstream_branch:
-            GitConfig.set(
+            self.gitconfig.set(
                 f"{self.config_prefix}.{pr_number}.upstream-branch",
                 upstream_branch,
                 add=True,
@@ -695,7 +451,7 @@ class GHPR:
 
         # Move staging branch to new tip
         LOGGER.info("Moving %s to include PR #%d", pr_branch, pr_number)
-        GitHelper.move_branch(self.staging)
+        self.githelper.move_branch(self.staging)
 
         self._checkstyle(base, self.staging)
 
@@ -748,17 +504,17 @@ class GHPR:
             # Optional: push to PR branches (experimental feature)
             if do_pr_branch_push:
                 for pr in prs:
-                    upstream = GitConfig.get(f"{self.config_prefix}.{pr}.upstream")
-                    upstream_branch = GitConfig.get(
+                    upstream = self.gitconfig.get(f"{self.config_prefix}.{pr}.upstream")
+                    upstream_branch = self.gitconfig.get(
                         f"{self.config_prefix}.{pr}.upstream-branch",
                     )
                     if upstream and upstream_branch:
                         click.echo(f"Pushing to PR #{pr} branch...")
-                        GitHelper.push(upstream, f"HEAD:{upstream_branch}", force=True)
+                        self.githelper.push(upstream, f"HEAD:{upstream_branch}", force=True)
 
             # Push to FreeBSD main
             click.echo("Pushing to FreeBSD main...")
-            if GitHelper.push(
+            if self.githelper.push(
                 self.staging_remote,
                 "HEAD:main",
                 push_option="confirm-author",
@@ -767,9 +523,9 @@ class GHPR:
 
             # Push failed, rebase and retry
             click.echo("Push failed, fetching and rebasing...")
-            GitHelper.fetch(self.staging_remote)
+            self.githelper.fetch(self.staging_remote)
             try:
-                GitHelper.rebase("freebsd/main")
+                self.githelper.rebase("freebsd/main")
             except subprocess.CalledProcessError:
                 self.die("Rebase failed. Please resolve conflicts manually.")
 
@@ -777,8 +533,8 @@ class GHPR:
 
         # Update local main
         click.echo("Updating local main branch...")
-        GitHelper.checkout("main")
-        GitHelper.pull(rebase=True)
+        self.githelper.checkout("main")
+        self.githelper.pull(rebase=True)
 
         # Cleanup PRs
         click.echo("\nCleaning up...")
@@ -806,14 +562,14 @@ class GHPR:
                     LOGGER.warning("failed to update PR #%d", pr, exc_info=True)
 
             # Delete PR branch
-            GitHelper.delete_branch(f"PR-{pr}")
+            self.githelper.delete_branch(f"PR-{pr}")
 
             # Remove PR config
-            GitConfig.remove_section(f"{self.config_prefix}.{pr}")
+            self.gitconfig.remove_section(f"{self.config_prefix}.{pr}")
 
         # Remove staging branch config and branch
-        GitConfig.remove_section(self.config_prefix)
-        GitHelper.delete_branch(self.staging)
+        self.gitconfig.remove_section(self.config_prefix)
+        self.githelper.delete_branch(self.staging)
 
         click.echo(f"\nSuccessfully landed {len(prs)} PR(s)!")
 
@@ -834,7 +590,7 @@ class GHPR:
 
         # Find commits that belong to this PR by looking for the Pull Request trailer
         # Note: Git normalizes "Pull-Request" to "Pull Request" in trailers
-        pr_commits = GitHelper.get_commits_with_trailer(
+        pr_commits = self.githelper.get_commits_with_trailer(
             base,
             self.staging,
             "Pull Request",
@@ -852,7 +608,7 @@ class GHPR:
             LOGGER.info("Found %d commit(s) for PR #%d", len(pr_commits), pr_number)
 
             # Get all commits in staging
-            result = GitHelper.run(
+            result = self.githelper.run(
                 ["log", "--format=%H", f"{base}..{self.staging}"],
                 capture=True,
                 safe=True,
@@ -873,38 +629,38 @@ class GHPR:
                     self.staging,
                     base,
                 )
-                GitHelper.run(["reset", "--hard", base])
+                self.githelper.run(["reset", "--hard", base])
             else:
                 # Rebuild staging branch without the PR's commits
                 LOGGER.info("rebuilding %s without PR #%d... ", self.staging, pr_number)
 
                 # Create a temporary branch at base
                 temp_branch = f"temp-unstage-{pr_number}"
-                GitHelper.checkout(base)
-                GitHelper.checkout(temp_branch, create=True, base=base)
+                self.githelper.checkout(base)
+                self.githelper.checkout(temp_branch, create=True, base=base)
 
                 # Cherry-pick the remaining commits in reverse order (oldest first)
                 remaining_commits.reverse()
                 try:
-                    GitHelper.cherry_pick(remaining_commits)
+                    self.githelper.cherry_pick(remaining_commits)
                 except subprocess.CalledProcessError:
-                    GitHelper.delete_branch(temp_branch)
+                    self.githelper.delete_branch(temp_branch, check=False)
                     self.die(
                         "Failed to cherry-pick remaining commits. "
                         "You may need to manually rebase the staging branch.",
                     )
 
                 # Move staging to the new tree
-                GitHelper.run(["branch", "-f", self.staging, temp_branch])
-                GitHelper.checkout(self.staging)
-                GitHelper.delete_branch(temp_branch)
+                self.githelper.run(["branch", "-f", self.staging, temp_branch])
+                self.githelper.checkout(self.staging)
+                self.githelper.delete_branch(temp_branch)
 
         # Delete PR branch if it exists
-        GitHelper.delete_branch(f"PR-{pr_number}")
+        self.githelper.delete_branch(f"PR-{pr_number}")
 
         # Remove from config
-        GitConfig.unset(f"{self.config_prefix}.prs", pr_str)
-        GitConfig.remove_section(f"{self.config_prefix}.{pr_number}")
+        self.gitconfig.unset(f"{self.config_prefix}.prs", pr_str)
+        self.gitconfig.remove_section(f"{self.config_prefix}.{pr_number}")
 
         # Remove 'staged' label from GitHub PR
         click.echo(f"Removing 'staged' label from PR #{pr_number}...")
@@ -945,8 +701,8 @@ class GHPR:
         if prs:
             click.echo("\nStaged PRs:")
             for pr in prs:
-                upstream = GitConfig.get(f"{self.config_prefix}.{pr}.upstream")
-                upstream_branch = GitConfig.get(
+                upstream = self.gitconfig.get(f"{self.config_prefix}.{pr}.upstream")
+                upstream_branch = self.gitconfig.get(
                     f"{self.config_prefix}.{pr}.upstream-branch",
                 )
                 click.echo(f"  PR #{pr}")

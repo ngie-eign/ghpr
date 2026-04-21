@@ -1,17 +1,9 @@
-"""End-to-end tests for `ghpr`."""
+"""'ghpr.cli' module tests.
 
-# Stuff that doesn't need to be fixed:
+TODO: further mock out interfaces/test CLI paths more thoroughly.
+"""
 
-# ruff: noqa: S101
-
-# Stuff that's worth fixing, but is being suppressed for now.
-
-# ruff: noqa: ANN001, ANN201, FIX002, TD002, TD003
-
-import os
-import pathlib
-import shutil
-from contextlib import contextmanager
+from unittest import mock
 
 import git
 import pytest
@@ -213,11 +205,22 @@ class TestUnstage:
             assert result.exit_code == 0, format_result(result)
 
 
-class TestGitHelper:
+class TestGHPRInit:
+    """`GHPR.init` tests which go beyond what `TestInit` can easily test."""
+
     @staticmethod
-    def test_dry_run(setup_staging) -> None:
-        """Confirm that `--dry-run` works."""
-        staging_repo = setup_staging
-        with sandbox(staging_repo):
-            assert __main__.GitHelper.branch_exists("main")
-            assert not __main__.GitHelper.branch_exists("doesnotexist")
+    def test_init_branch_exists_but_not_initialized(
+        default_freebsd_remote: ...,
+    ) -> None:
+        """Confirm that repos with existing staging branches are rebased-not deleted."""
+        with sandbox(default_freebsd_remote):
+            ghpr = __main__.GHPR()
+            with mock.patch.object(ghpr, "is_initialized", return_value=False):
+                with mock.patch.multiple(
+                    ghpr.githelper,
+                    branch_exists=mock.DEFAULT,
+                    rebase=mock.DEFAULT,
+                ) as gh_mocks:
+                    gh_mocks["branch_exists"].return_value = True
+                    ghpr.init()
+                    gh_mocks["rebase"].assert_called_with(__main__.DEFAULT_BASE)
