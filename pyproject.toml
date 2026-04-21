@@ -61,7 +61,7 @@ directory = "htmlcov"
 
 [tool.coverage.report]
 # TODO: raise the coverage bar to ~80%.
-fail_under = 50
+fail_under = 60
 
 [tool.coverage.run]
 branch = true
