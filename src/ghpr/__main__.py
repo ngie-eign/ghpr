@@ -13,7 +13,6 @@ SPDX-License-Identifier: BSD-2-Clause
 #
 # ruff: noqa: S603
 
-
 from __future__ import annotations
 
 import contextlib
@@ -25,6 +24,7 @@ from pathlib import Path
 from typing import Self
 
 import click
+import git
 
 from . import __version__, logging
 from .gh import GHHelper
@@ -54,16 +54,19 @@ class GHPR:
         staging_branch: str = DEFAULT_STAGING_BRANCH,
         staging_remote: str = DEFAULT_STAGING_REMOTE,
         verbose: bool = False,
+        work_dir: str | None = None,
     ) -> None:
         self.githelper = GitHelper(
             dry_run=dry_run,
             verbose=verbose,
+            working_dir=work_dir,
         )
         self.gitconfig = GitConfig(dry_run=dry_run, verbose=verbose)
         self.ghhelper = GHHelper(
             dry_run=dry_run,
             freebsd_src_repo=freebsd_src_repo,
             verbose=verbose,
+            working_dir=work_dir,
         )
 
         self.base = base
@@ -106,20 +109,18 @@ class GHPR:
         """
         # Check if remote exists
         try:
-            result = self.githelper.run(
-                ["remote", "get-url", self.staging_remote],
-                capture=True,
-                check=True,
+            fetch_url = self.githelper.remote(
+                ["get-url", self.staging_remote],
+                strip_newline_in_stdout=True,
+                with_extended_output=False,
                 safe=True,
             )
-        except subprocess.CalledProcessError:
+        except git.exc.GitCommandError:
             self.die(
                 f"No {self.staging_remote!r} remote found.\n"
                 f"Please add it with:\n"
                 f"  git remote add {self.staging_remote} {ALLOWED_STAGING_URLS[0]}",
             )
-        else:
-            fetch_url = result.stdout.strip()
 
         def validate_url(url: str, desc: str, set_url_flags: str) -> None:
             """Confirm that the URL specified is valid."""
@@ -139,13 +140,13 @@ class GHPR:
 
         # Check push URL
         try:
-            result = self.githelper.run(
-                ["remote", "get-url", "--push", self.staging_remote],
-                capture=True,
-                check=False,
+            # If no separate push URL, it uses fetch URL
+            push_url = self.githelper.remote(
+                ["get-url", "--push", self.staging_remote],
+                strip_newline_in_stdout=True,
+                with_extended_output=False,
                 safe=True,
             )
-            push_url = result.stdout.strip()
         except subprocess.CalledProcessError:
             push_url = fetch_url
 
@@ -188,14 +189,14 @@ class GHPR:
             click.echo(f"Creating {staging_branch} from {self.base} to land changes")
             try:
                 self.githelper.checkout(staging_branch, create=True, base=self.base)
-            except subprocess.CalledProcessError:
+            except git.exc.GitCommandError:
                 click.echo(traceback.format_exc())
                 self.die(f"Can't create {staging_branch}")
 
         try:
             self.gitconfig.set(self.config_prefix, "true", config_type="bool")
             self.gitconfig.set(f"{self.config_prefix}.base", self.base)
-        except subprocess.CalledProcessError:
+        except git.exc.GitCommandError:
             click.echo(traceback.format_exc())
             self.die("Can't annotate branch config")
 
@@ -305,8 +306,8 @@ class GHPR:
 
             # Continue the rebase
             try:
-                self.githelper.run(["rebase", "--continue"], check=True)
-            except subprocess.CalledProcessError:
+                self.githelper.rebase(["--continue"])
+            except git.exc.GitCommandError:
                 self.die(
                     "Rebase continue failed. "
                     "Resolve conflicts and run 'ghpr stage --continue <PR>' again.",
@@ -431,7 +432,7 @@ class GHPR:
                 interactive=True,
                 exec_cmd=exec_cmd,
             )
-        except subprocess.CalledProcessError:
+        except git.exc.GitCommandError:
             click.echo("\n" + "=" * 70)
             click.echo("REBASE FAILED - Conflicts need to be resolved")
             click.echo("=" * 70)
@@ -652,14 +653,15 @@ class GHPR:
             LOGGER.info("Found %d commit(s) for PR #%d", len(pr_commits), pr_number)
 
             # Get all commits in staging
-            result = self.githelper.run(
-                ["log", "--format=%H", f"{base}..{self.staging_branch}"],
+            output = self.githelper.log(
+                ["--format=%H", f"{base}..{self.staging_branch}"],
                 capture=True,
-                safe=True,
+                strip_newline_in_stdout=True,
+                with_extended_output=False,
             )
             all_commits = [
                 line.strip()
-                for line in result.stdout.strip().splitlines(keepends=False)
+                for line in output.splitlines(keepends=False)
                 if line.strip()
             ]
 
@@ -673,7 +675,7 @@ class GHPR:
                     self.staging_branch,
                     base,
                 )
-                self.githelper.run(["reset", "--hard", base])
+                self.githelper.reset(["--hard", base])
             else:
                 # Rebuild staging branch without the PR's commits
                 LOGGER.info(
@@ -691,7 +693,7 @@ class GHPR:
                 remaining_commits.reverse()
                 try:
                     self.githelper.cherry_pick(remaining_commits)
-                except subprocess.CalledProcessError:
+                except git.exc.GitCommandError:
                     self.githelper.delete_branch(temp_branch, check=False)
                     self.die(
                         "Failed to cherry-pick remaining commits. "
@@ -699,12 +701,12 @@ class GHPR:
                     )
 
                 # Move staging to the new tree
-                self.githelper.run(["branch", "-f", self.staging_branch, temp_branch])
+                self.githelper.branch(["-f", self.staging_branch, temp_branch])
                 self.githelper.checkout(self.staging_branch)
                 self.githelper.delete_branch(temp_branch)
 
         # Delete PR branch if it exists
-        self.githelper.delete_branch(self._pr_branch(pr_number))
+        self.githelper.delete_branch(self._pr_branch(pr_number), check=False)
 
         # Remove from config
         self.gitconfig.unset(f"{self.config_prefix}.prs", pr_str)
@@ -790,6 +792,10 @@ pass_ghpr = click.make_pass_decorator(GHPR)
     help="Name of remote used for `--staging-branch` (default: %(default)s)",
 )
 @click.option("--verbose", default=False, is_flag=True)
+@click.option(
+    "--work-dir",
+    type=click.Path(dir_okay=True, exists=True, file_okay=False),
+)
 @click.version_option(__version__)
 @click.pass_context
 def cli(
@@ -799,6 +805,7 @@ def cli(
     staging_branch: str,
     staging_remote: str,
     verbose: bool,
+    work_dir: click.Path | None,
 ) -> None:
     r"""GitHub Pull Request landing tool for FreeBSD.
 
@@ -830,12 +837,16 @@ def cli(
     if dry_run:
         click.echo("DRY RUN MODE - No changes will be made\n")
 
+    if work_dir is None:
+        work_dir = Path.cwd()
+
     ctx.obj = GHPR(
         dry_run=dry_run,
         freebsd_src_repo=freebsd_src_repo,
         staging_branch=staging_branch,
         staging_remote=staging_remote,
         verbose=verbose,
+        work_dir=work_dir,
     )
 
 

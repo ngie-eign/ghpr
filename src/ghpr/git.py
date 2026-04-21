@@ -1,10 +1,11 @@
 """Git subroutines/interfaces."""
 
-import contextlib
-import subprocess
+import os
+from collections.abc import Sequence
 from typing import Self
 
-import click
+import git
+from git.cmd import Git
 
 
 class GitHelper:
@@ -17,46 +18,55 @@ class GitHelper:
         verbose: bool = False,
         working_dir: ... = None,
     ) -> None:
-        self.dry_run = dry_run
-        self.verbose = verbose
-
-    def _print_cmd(self: Self, cmd: list[str]) -> None:
-        """Print command if verbose or dry-run mode is enabled."""
-        if self.verbose or self.dry_run:
-            click.echo(f"+ {' '.join(cmd)}")
+        self._dry_run = dry_run
+        self._git = Git(working_dir=working_dir)
+        if verbose:
+            os.environ["GIT_PYTHON_TRACE"] = "full"
 
     def run(
         self: Self,
-        args: list[str],
+        git_args: str | Sequence[...],
+        *args: Sequence[...],
         check: bool = True,
         capture: bool = False,
         safe: bool = False,
-    ) -> subprocess.CompletedProcess:
-        """Run a git command."""
-        cmd = ["git", *args]
-        self._print_cmd(cmd)
-        if self.dry_run and not safe:
-            # In dry-run mode, don't execute anything
-            class FakeResult:
-                stdout = ""
-                stderr = ""
-                returncode = 0
+        **kwargs: dict,
+    ) -> str | tuple[int, str, str]:
+        """Execute commands."""
+        if self._dry_run and not safe:
+            return (0, "", "")
 
-            return FakeResult()
-        if capture:
-            return subprocess.run(cmd, capture_output=True, text=True, check=check)
-        return subprocess.run(cmd, check=check)
+        kwargs["stdout_as_string"] = True
+        kwargs["with_exceptions"] = check
+        # Git.execute(... with_extended_output=False, ...) crashes with versions of the
+        # library: https://github.com/gitpython-developers/GitPython/pull/2126 .
+        # kwargs["with_stdout"] = capture
+        kwargs["with_stdout"] = True
+        kwargs.setdefault("with_extended_output", True)
+
+        if isinstance(git_args, str):
+            git_cmd = f"{Git.GIT_PYTHON_GIT_EXECUTABLE} {git_args}"
+        else:
+            git_cmd = [Git.GIT_PYTHON_GIT_EXECUTABLE, *git_args]
+        return self._git.execute(git_cmd, *args, **kwargs)
+
+    def rev_parse(self: Self, git_args: list, *args: list, **kwargs: dict) -> ...:
+        """Proxy for `git rev-parse`."""
+        kwargs["safe"] = True
+        return self.run(["rev-parse", *git_args], *args, **kwargs)
 
     def branch_exists(self: Self, branch: str) -> bool:
-        """Check if a branch exists."""
-        cmd = ["git", "rev-parse", "--verify", branch]
-        self._print_cmd(cmd)
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            check=False,
-        )
-        return proc.returncode == 0
+        """Check if a branch exists.
+
+        Args:
+            branch: branch to test for.
+
+        Returns:
+            True if it exists; False if it does not exist.
+
+        """
+        returncode, _, _ = self.rev_parse(["--verify", branch], check=False)
+        return returncode == 0
 
     def checkout(
         self: Self,
@@ -65,31 +75,43 @@ class GitHelper:
         base: str | None = None,
     ) -> None:
         """Checkout a branch, optionally creating it."""
-        cmd = ["checkout"]
+        git_args = ["checkout"]
         if create:
-            cmd.append("-b")
-        cmd.append(branch)
-        if base:
-            cmd.append(base)
-        self.run(cmd)
+            git_args.extend(["-b", branch])
+            if base is not None:
+                git_args.append(base)
+        else:
+            git_args.append(branch)
+        self.run(git_args)
+
+    def config(
+        self: Self,
+        git_args: list,
+        *args: list,
+        **kwargs: dict,
+    ) -> ...:
+        """Proxy for `git config`."""
+        return self.run(["config", *git_args], *args, **kwargs)
 
     def rebase(
         self: Self,
         base: str,
+        *args: list,
         onto: str | None = None,
         interactive: bool = False,
         exec_cmd: str | None = None,
+        **kwargs: dict,
     ) -> None:
         """Rebase current branch."""
-        cmd = ["rebase"]
+        git_args = []
         if interactive:
-            cmd.append("-i")
+            git_args.append("-i")
         if onto:
-            cmd.extend(["--onto", onto])
+            git_args.extend(["--onto", onto])
         if exec_cmd:
-            cmd.extend(["--exec", exec_cmd])
-        cmd.append(base)
-        self.run(cmd)
+            git_args.extend(["--exec", exec_cmd])
+        git_args.append(base)
+        self.run(["rebase", *git_args], *args, **kwargs)
 
     def push(
         self: Self,
@@ -99,44 +121,44 @@ class GitHelper:
         push_option: str | None = None,
     ) -> bool:
         """Push to remote, return True if successful."""
-        cmd = ["push"]
+        git_args = []
         if push_option:
-            cmd.extend(["--push-option", push_option])
+            git_args.extend(["--push-option", push_option])
         if force:
-            cmd.append("--force")
-        cmd.extend([remote, refspec])
-        try:
-            self.run(cmd)
-        except subprocess.CalledProcessError:
-            return False
-        else:
-            return True
+            git_args.append("--force")
+        git_args.extend([remote, refspec])
+        returncode, _, _ = self.run(["push", *git_args], check=False)
+        return returncode == 0
 
-    def fetch(self: Self, remote: str) -> None:
+    def fetch(self: Self, remote: str, *args: list, **kwargs: dict) -> None:
         """Fetch from remote."""
-        self.run(["fetch", remote], safe=True)
+        kwargs["safe"] = True
+        self.run(["fetch", remote], *args, **kwargs)
 
-    def pull(self: Self, rebase: bool = True) -> None:
+    def pull(self: Self, rebase: bool = True, *args: list, **kwargs: dict) -> None:
         """Pull from current upstream."""
-        cmd = ["pull"]
-        if rebase:
-            cmd.append("--rebase")
-        self.run(cmd)
+        self.run(["pull", "--rebase"] if rebase else [], *args, **kwargs)
 
-    def delete_branch(self: Self, branch: str, force: bool = True) -> None:
+    def branch(self: Self, git_args: list, *args: list, **kwargs: dict) -> None:
+        """Proxy for `git branch`."""
+        self.run(["branch", *git_args], *args, **kwargs)
+
+    def delete_branch(
+        self: Self,
+        branch: str,
+        force: bool = True,
+        *args: list,
+        **kwargs: dict,
+    ) -> None:
         """Delete a branch."""
-        flag = "-D" if force else "-d"
-        self.run(
-            ["branch", flag, branch],
-            check=False,  # The branch might not exist
-        )
+        self.branch(["-D" if force else "-d", branch], *args, **kwargs)
 
     def move_branch(self: Self, branch: str, target: str = "HEAD") -> None:
         """Force-move a branch to a specific commit and check it out."""
         # Force-move the branch pointer
-        self.run(["branch", "-f", branch, target])
+        self.branch(["-f", branch, target])
         # Check out the branch
-        self.run(["checkout", branch])
+        self.checkout([branch])
 
     def get_commits_with_trailer(
         self: Self,
@@ -145,26 +167,53 @@ class GitHelper:
         trailer: str,
         value: str,
     ) -> list[str]:
-        """Get commit hashes that contain a specific trailer value."""
+        """Get commit hashes that contain a specific trailer value.
+
+        Args:
+            base: base reference.
+            head: HEAD reference.
+            trailer: the prefix to search for.
+            value: the suffix to search for.
+
+        Returns:
+            All commit hashes that contain the specific "needle" between
+            `{base}...{head}`.
+
+        """
         cmd = [
-            "log",
             "--format=%H",
             "--grep",
             f"^{trailer}: .*{value}",
             f"{base}..{head}",
         ]
-        result = self.run(cmd, capture=True, safe=True)
+        output = self.log(
+            cmd,
+            strip_newline_in_stdout=True,
+            with_extended_output=False,
+        )
         return [
-            line.strip()
-            for line in result.stdout.strip().splitlines(keepends=False)
-            if line.strip()
+            line.strip() for line in output.splitlines(keepends=False) if line.strip()
         ]
 
-    def cherry_pick(self: Self, commits: list[str]) -> None:
+    def cherry_pick(
+        self: Self,
+        git_args: list[str],
+        *args: list,
+        **kwargs: dict,
+    ) -> None:
         """Cherry-pick commits."""
-        cmd = ["cherry-pick"]
-        cmd.extend(commits)
-        self.run(cmd)
+        self.run(["cherry-pick", *git_args], *args, **kwargs)
+
+    def log(self: Self, git_args: list, *args: list, **kwargs: dict) -> ...:
+        """Proxy for `git log`."""
+        kwargs.setdefault("capture", True)
+        kwargs["safe"] = True
+        return self.run(["log", *git_args], *args, **kwargs)
+
+    def remote(self: Self, git_args: list, *args: list, **kwargs: dict) -> ...:
+        """Proxy for `git remote`."""
+        kwargs.setdefault("safe", True)
+        return self.run(["remote", *git_args], *args, **kwargs)
 
 
 class GitConfig(GitHelper):
@@ -172,31 +221,31 @@ class GitConfig(GitHelper):
 
     def get(self: Self, key: str, default: str | None = None) -> str | None:
         """Get a git config value."""
-        cmd = ["git", "config", "--get", key]
-        self._print_cmd(cmd)
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-            return result.stdout.strip()
-        except subprocess.CalledProcessError:
+            output = self.config(
+                ["--get", key],
+                safe=True,
+                strip_newline_in_stdout=True,
+                with_extended_output=False,
+                with_stdout=True,
+            )
+        except git.exc.GitCommandError:
             return default
+        else:
+            return output
 
     def get_all(self: Self, key: str) -> list[str]:
         """Get all values for a git config key."""
-        cmd = ["git", "config", "--get-all", key]
-        self._print_cmd(cmd)
-        if self.dry_run:
-            return []
-        result = subprocess.run(
-            cmd,
-            check=False,  # The section might not exist
+        output = self.config(
+            ["--get-all", key],
+            check=False,  # The section might not exist.
             safe=True,
-            capture_output=True,
-            text=True,
+            strip_newline_in_stdout=True,
+            with_extended_output=False,
+            with_stdout=True,
         )
         return [
-            line.strip()
-            for line in result.stdout.strip().splitlines(keepends=False)
-            if line.strip()
+            line.strip() for line in output.splitlines(keepends=False) if line.strip()
         ]
 
     def set(
@@ -206,38 +255,39 @@ class GitConfig(GitHelper):
         config_type: str | None = None,
         add: bool = False,
     ) -> None:
-        """Set a git config value."""
-        cmd = ["git", "config"]
+        """Sets/appends `value` to the `git config` denoted by `key`.
+
+        Args:
+            key: config key.
+            value: value to set in the git config.
+            config_type: a specific type to treat `value` as. See `git config --type`
+                         for more details.
+            add: Append `value` to any preexisting configuration denoted by
+                 `key` if True and set `value` verbatim to `key` if False.
+
+        """
+        args = []
         if config_type:
-            cmd.extend(["--type", config_type])
+            args.extend(["--type", config_type])
         if add:
-            cmd.append("--add")
-        cmd.extend([key, value])
-        self._print_cmd(cmd)
-        if self.dry_run:
-            return
-        subprocess.run(cmd, check=True)
+            args.append("--add")
+        args.extend([key, str(value)])
+        self.config(args)
 
-    def unset(self: Self, key: str, value: str | None = None) -> None:
+    def unset(
+        self: Self,
+        key: str,
+        value: str | None = None,
+    ) -> None:
         """Unset a git config value."""
-        cmd = ["git", "config", "--unset"]
-        cmd.append(key)
+        args = ["--unset", key]
         if value:
-            cmd.append(value)
-        self._print_cmd(cmd)
-        if self.dry_run:
-            return
-        with contextlib.suppress(subprocess.CalledProcessError):  # Key might not exist
-            subprocess.run(cmd, check=True, stderr=subprocess.DEVNULL)
+            args.append(value)
+        self.config(args, check=False)
 
-    def remove_section(self: Self, section: str) -> None:
+    def remove_section(
+        self: Self,
+        section: str,
+    ) -> None:
         """Remove a git config section."""
-        cmd = ["git", "config", "--remove-section", section]
-        self._print_cmd(cmd)
-        if self.dry_run:
-            return
-        subprocess.run(
-            cmd,
-            check=False,  # The section might not exist
-            stderr=subprocess.DEVNULL,
-        )
+        self.config(["--remove-section", section])

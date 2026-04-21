@@ -20,10 +20,12 @@ class GHHelper:
         freebsd_src_repo: str,
         dry_run: bool = False,
         verbose: bool = False,
+        working_dir: str | os.PathLike | None = None,
     ) -> None:
         self.freebsd_src_repo = freebsd_src_repo
         self.dry_run = dry_run
         self.verbose = verbose
+        self.working_dir = working_dir
 
     def run(
         self: Self,
@@ -46,7 +48,7 @@ class GHHelper:
         if capture:
             subproc_kwargs["capture_output"] = True
             subproc_kwargs["text"] = True
-        return subprocess.run(cmd, check=check, **subproc_kwargs)
+        return subprocess.run(cmd, check=check, cwd=self.working_dir, **subproc_kwargs)
 
     def gh_pr(
         self: Self,

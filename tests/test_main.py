@@ -5,7 +5,6 @@ TODO: further mock out interfaces/test CLI paths more thoroughly.
 
 from unittest import mock
 
-import git
 import pytest
 from click.testing import CliRunner
 
@@ -82,6 +81,18 @@ class TestInit:
             assert result.exit_code == 0, format_result(result)
 
     @staticmethod
+    @pytest.mark.xfail(reason="--work-dir doesn't work fully yet.")
+    def test_work_dir_option(setup_staging: ...) -> None:
+        """Confirm that `--work-dir` works."""
+        runner = CliRunner()
+        staging_repo = setup_staging
+        with runner.isolated_filesystem():
+            result = runner.invoke(
+                __main__.cli, ["--work-dir", str(staging_repo.resolve()), "init"]
+            )
+            assert result.exit_code == 0, format_result(result)
+
+    @staticmethod
     def test_force(default_freebsd_remote: ...) -> None:
         """Confirm that `--force` is effectively a no-op if run on fresh repo."""
         runner = CliRunner()
@@ -129,7 +140,6 @@ class TestPush:
             assert result.exit_code != 0, format_result(result)
 
     @staticmethod
-    @pytest.mark.xfail
     def test_dry_run(setup_staging: ...) -> None:
         """Confirm that `--dry-run` works."""
         staging_repo = setup_staging
@@ -151,7 +161,6 @@ class TestStage:
             assert result.exit_code != 0, format_result(result)
 
     @staticmethod
-    @pytest.mark.xfail
     def test_dry_run(setup_staging: ...) -> None:
         """Confirm that `--dry-run` works."""
         staging_repo = setup_staging
@@ -195,7 +204,6 @@ class TestUnstage:
             assert result.exit_code != 0, format_result(result)
 
     @staticmethod
-    @pytest.mark.xfail
     def test_dry_run(setup_staging: ...) -> None:
         """Confirm that `--dry-run` works."""
         staging_repo = setup_staging
